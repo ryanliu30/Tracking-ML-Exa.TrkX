@@ -1,0 +1,36 @@
+# Input/output configuration
+input_dir: /global/cfs/cdirs/m3443/usr/ryanliu/ITk_embedding/ITk_processed/ITk_barrel_full
+output_dir: /global/cfs/cdirs/m3443/usr/ryanliu/ITk_filter/ITk_processed/ITk_barrel_full
+project: ITk_1GeV_Filter
+
+# Dataset parameters
+datatype_names: [eff98cut] # Which directory prefixes to use, assuming at least a train dataset 
+datatype_split: [1000, 5, 2000] # Number of [training, validation, testing] examples
+
+# Model parameters
+spatial_channels: 3
+cell_channels: 8
+hidden: 1024
+nb_layer: 7
+layernorm: True
+n_chunks: 20
+edges_per_batch: 10000
+warmup: 200
+lr: 0.0005
+patience: 3
+max_epochs: 50
+max_steps: 15000
+regime: [ci]
+weight_leak: 0.
+signal_pt_cut: 1000.
+factor: 0.3
+signal_pt_interval: 500.
+intercept: 2
+weight_ratio: 1
+max_eff: 0.97
+
+# Post-processing
+callbacks: [] #[FilterInferenceCallback]
+
+# Logging
+wandb_save_dir: /global/cscratch1/sd/danieltm/ExaTrkX/wandb_data

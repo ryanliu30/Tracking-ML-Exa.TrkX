@@ -15,10 +15,10 @@ from torch_geometric.data import DataLoader
 
 # Local imports
 from ..utils import graph_intersection
-from ..filter_base import FilterBase, FilterBaseBalanced
+from ..triplet_filter_base import FilterBase
 
 
-class PyramidFilter(FilterBaseBalanced):
+class PyramidFilter(FilterBase):
     def __init__(self, hparams):
         super().__init__(hparams)
         """
@@ -26,28 +26,22 @@ class PyramidFilter(FilterBaseBalanced):
         """
 
         # Construct the MLP architecture
-        self.input_layer = Linear(
-            (hparams["spatial_channels"] + hparams["cell_channels"]) * 2
-            + hparams["emb_channels"] * 2,
-            hparams["hidden"],
-        )
+        in_channels = (hparams["spatial_channels"] + hparams["cell_channels"]) * 2
+        
+        self.input_layer = Linear(in_channels, hparams["hidden"])
         layers = [
-            Linear(hparams["hidden"] // (2**i), hparams["hidden"] // (2 ** (i + 1)))
-            for i in range(hparams["nb_layer"] - 1)
+            Linear(hparams["hidden"], hparams["hidden"])
+            for _ in range(hparams["nb_layer"] - 1)
         ]
+        
         self.layers = nn.ModuleList(layers)
-        self.output_layer = nn.Linear(
-            hparams["hidden"] // (2 ** (hparams["nb_layer"] - 1)), 1
-        )
-        self.act = nn.Tanh()
+        self.output_layer = nn.Linear(hparams["hidden"], 1)
+        self.act = nn.GELU()
 
-    def forward(self, x, e, emb=None):
-        if emb is not None:
-            x = self.input_layer(
-                torch.cat([x[e[0]], emb[e[0]], x[e[1]], emb[e[1]]], dim=-1)
-            )
-        else:
-            x = self.input_layer(torch.cat([x[e[0]], x[e[1]]], dim=-1))
+    def forward(self, x, e):
+        
+        x = self.input_layer(torch.cat([x[e[0]], x[e[1]]], dim=-1))
+        
         for l in self.layers:
             x = l(x)
             x = self.act(x)

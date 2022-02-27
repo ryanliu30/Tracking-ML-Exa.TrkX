@@ -25,7 +25,7 @@ class InteractionMultistepGNN(GNNBase):
         # Setup input network
         self.node_encoder = make_mlp(
             hparams["in_channels"],
-            [hparams["hidden"], int(hparams["hidden"] / 2)],
+            [hparams["hidden"],hparams["hidden"], int(hparams["hidden"]/2)],
             output_activation=hparams["hidden_activation"],
             layer_norm=hparams["layernorm"],
         )
@@ -33,7 +33,7 @@ class InteractionMultistepGNN(GNNBase):
         # The edge network computes new edge features from connected nodes
         self.edge_encoder = make_mlp(
             hparams["hidden"],
-            [hparams["hidden"], int(hparams["hidden"] / 2)],
+            [hparams["hidden"],hparams["hidden"], int(hparams["hidden"]/2)],
             layer_norm=hparams["layernorm"],
             output_activation=hparams["hidden_activation"],
             hidden_activation=hparams["hidden_activation"],
@@ -42,7 +42,7 @@ class InteractionMultistepGNN(GNNBase):
         # The edge network computes new edge features from connected nodes
         self.edge_network = make_mlp(
             2 * hparams["hidden"],
-            [hparams["hidden"], int(hparams["hidden"] / 2)],
+            [hparams["hidden"],hparams["hidden"], int(hparams["hidden"]/2)],
             layer_norm=hparams["layernorm"],
             output_activation=hparams["hidden_activation"],
             hidden_activation=hparams["hidden_activation"],
@@ -51,7 +51,7 @@ class InteractionMultistepGNN(GNNBase):
         # The node network computes new node features
         self.node_network = make_mlp(
             2 * hparams["hidden"],
-            [hparams["hidden"], int(hparams["hidden"] / 2)],
+            [hparams["hidden"],hparams["hidden"], int(hparams["hidden"]/2)],
             layer_norm=hparams["layernorm"],
             output_activation=hparams["hidden_activation"],
             hidden_activation=hparams["hidden_activation"],
@@ -60,7 +60,7 @@ class InteractionMultistepGNN(GNNBase):
         # Final edge output classification network
         self.output_edge_classifier = make_mlp(
             int(1.5 * hparams["hidden"]),
-            [hparams["hidden"], int(hparams["hidden"] / 2), 1],
+            [hparams["hidden"],hparams["hidden"], int(hparams["hidden"]/2), 1],
             layer_norm=hparams["layernorm"],
             output_activation=None,
             hidden_activation=hparams["hidden_activation"],
@@ -117,28 +117,22 @@ class InteractionMultistepGNN(GNNBase):
             if ("ci" in self.hparams["regime"])
             else self(batch.x, batch.edge_index)
         )
-
+        
         output = torch.cat(output)
 
         if "pid" in self.hparams["regime"]:
-            y = batch.pid[batch.edge_index[0]] == batch.pid[batch.edge_index[1]]
+            y = (
+                batch.pid[batch.edge_index[0]] == batch.pid[batch.edge_index[1]]
+            )
         else:
             y = batch.y
-
+        
         loss = F.binary_cross_entropy_with_logits(
-            output,
-            y.float().repeat(self.hparams["n_graph_iters"]),
-            weight=torch.repeat_interleave(
-                (
-                    (torch.arange(self.hparams["n_graph_iters"]) + 1)
-                    / self.hparams["n_graph_iters"]
-                ).to(self.device),
-                len(y),
-            ),
-            pos_weight=weight,
+            output, y.float().repeat(self.hparams["n_graph_iters"]), 
+            weight=torch.repeat_interleave(((torch.arange(self.hparams["n_graph_iters"])+1)/self.hparams["n_graph_iters"]).to(self.device), len(y)), pos_weight=weight
         )
 
-        self.log("train_loss", loss)
+        self.log("train_loss", loss, on_step=True, on_epoch=True)
 
         return loss
 
@@ -149,9 +143,11 @@ class InteractionMultistepGNN(GNNBase):
             if ("weight" in self.hparams)
             else torch.tensor((~batch.y_pid.bool()).sum() / batch.y_pid.sum())
         )
-
+        
         if "pid" in self.hparams["regime"]:
-            y = batch.pid[batch.edge_index[0]] == batch.pid[batch.edge_index[1]]
+            y = (
+                batch.pid[batch.edge_index[0]] == batch.pid[batch.edge_index[1]]
+            )
         else:
             y = batch.y
 
@@ -162,7 +158,7 @@ class InteractionMultistepGNN(GNNBase):
             if ("ci" in self.hparams["regime"])
             else self(batch.x, batch.edge_index)
         )
-
+        
         output = output[-1]
 
         truth = (
@@ -181,18 +177,20 @@ class InteractionMultistepGNN(GNNBase):
         )
 
         # Edge filter performance
-        preds = F.sigmoid(output) > self.hparams["edge_cut"]
-        edge_positive = preds.sum().float()
+#         preds = F.sigmoid(output) > self.hparams["edge_cut"]
+#         edge_positive = preds.sum().float()
 
-        edge_true = truth.sum().float()
-        edge_true_positive = (truth.bool() & preds).sum().float()
+#         edge_true = truth.sum().float()
+#         edge_true_positive = (truth.bool() & preds).sum().float()
 
-        eff = torch.tensor(edge_true_positive / edge_true)
-        pur = torch.tensor(edge_true_positive / edge_positive)
+#         eff = torch.tensor(edge_true_positive / edge_true)
+#         pur = torch.tensor(edge_true_positive / edge_positive)
+
+        preds, eff, pur, auc = self.get_metrics(truth, output)
 
         current_lr = self.optimizers().param_groups[0]["lr"]
         self.log_dict(
-            {"val_loss": loss, "eff": eff, "pur": pur, "current_lr": current_lr}
+            {"val_loss": loss, "eff": eff, "pur": pur, "auc": auc, "current_lr": current_lr}
         )
 
         return {

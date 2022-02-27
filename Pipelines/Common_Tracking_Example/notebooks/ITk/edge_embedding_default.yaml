@@ -1,0 +1,46 @@
+# Input/output configuration
+input_dir: /global/cfs/cdirs/m3443/usr/ryanliu/ITk_filter/filter_processed/test
+
+# Dataset parameters
+train_split: [200, 2, 0] # Number of [training, validation, testing] examples
+signal_pt_interval: 500.
+signal_pt_cut: 1000.
+weight_leak: 0.0
+merged_weight_ratio: 10
+weight_min: 0.1
+score_cut: 0.296
+n_nodes: 10000
+edges_per_nodes: 20
+n_chunks: 10
+cheat: False
+cheating_doublet_per_node: 2
+
+# Model parameters
+spatial_channels: 3
+emb_dim: 16
+max_eff: 0.8
+hidden: 1024
+cell_channels: 8
+nb_layer: 5
+weight_ratio: 1
+r_train: 1.0
+r_val: 1.0
+r_test: 1.5
+knn: 10
+warmup: 200
+margin: 1.5
+lr: 0.0001
+factor: 0.3
+patience: 5
+regime: [ci]
+max_epochs: 10
+max_steps: 10000
+layernorm: True
+anti_sym: True
+use_difference: False
+
+# Postprocessing
+callbacks: EmbeddingTelemetry #[EmbeddingInferenceCallback, 
+
+# Logging
+wandb_save_dir: /global/homes/r/ryanliu/ExaTrkX/wandb_data

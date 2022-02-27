@@ -5,196 +5,149 @@ import torch.nn as nn
 import torch
 import pandas as pd
 import numpy as np
-
+from torch_geometric.data import Dataset
 # import cupy as cp
 # import trackml.dataset
 
 # ---------------------------- Dataset Processing -------------------------
 
+class Gnn_dataloader(Dataset):
+    def __init__(self, dirs, num, pt_background_cut, pt_signal_cut, true_edges, noise):
+        super().__init__()
+        self.dirs = dirs
+        self.num = num
+        self.pt_background_cut = pt_background_cut
+        self.pt_signal_cut = pt_signal_cut
+        self.true_edges = true_edges
+        self.noise = noise
+        
+    def __getitem__(self, key):
+        loaded_event = torch.load(self.dirs[key], map_location=torch.device("cpu"))
+        loaded_event = select_data(loaded_event, self.pt_background_cut, self.pt_signal_cut, self.true_edges, self.noise)[0]
+        return loaded_event
+    def __len__(self):
+        return self.num
 
-def load_dataset(
-    input_subdir="",
-    num_events=10,
-    pt_background_cut=0,
-    pt_signal_cut=0,
-    noise=False,
-    triplets=False,
-    **kwargs
-):
-    if input_subdir is not None:
-        all_events = os.listdir(input_subdir)
-        all_events = sorted([os.path.join(input_subdir, event) for event in all_events])
-        print("Loading events")
-        loaded_events = [
-            torch.load(event, map_location=torch.device("cpu"))
-            for event in all_events[:num_events]
-        ]
-        print("Events loaded!")
-        loaded_events = process_data(
-            loaded_events, pt_background_cut, pt_signal_cut, noise, triplets
-        )
-        print("Events processed!")
+def convert_triplet_graph(event, edge_cut=0.5, directed=True):
+    
+    triplet_edges, triplet_y_truth, triplet_y_pid_truth = build_triplets(event, edge_cut, directed)
+    
+    triplet_x, triplet_cell_data = get_symmetric_values(event.x, event.edge_index), get_symmetric_values(event.cell_data, event.edge_index)
+    
+    event.doublet_edge_index, event.doublet_y, event.doublet_y_pid, event.doublet_x, event.doublet_cell_data = event.edge_index, event.y, event.y_pid, event.x, event.cell_data
+    event.edge_index, event.y, event.y_pid, event.x, event.cell_data = triplet_edges, triplet_y_truth, triplet_y_pid_truth, triplet_x, triplet_cell_data
+    
+    return event
+    
+def build_triplets(graph, edge_cut=0.5, directed=True):
+    
+    undir_graph = torch.cat([graph.edge_index, graph.edge_index.flip(0)], dim=-1)
+    
+     # apply cut
+    passing_edges = undir_graph[:, graph.scores.repeat(2) > edge_cut]
+    passing_y_truth = graph.y[graph.scores > edge_cut]
+    passing_y_pid_truth = graph.y_pid[graph.scores > edge_cut]
+    
+    # convert to cupy
+    passing_edges_cp = cp.asarray(passing_edges).astype('float32')
+    
+    # make some utility objects
+    num_edges = passing_edges.shape[1]
+    e_ones = cp.array([1]*num_edges).astype('float32')
+    e_arange = cp.arange(num_edges).astype('float32')
+    e_max = passing_edges.max().item()
+    
+    # build sparse edge array
+    passing_edges_csr_in = cp.sparse.coo_matrix((e_ones, (passing_edges_cp[0], e_arange)), shape=(e_max+1, num_edges)).tocsr()
+    passing_edges_csr_out = cp.sparse.coo_matrix((e_ones, (passing_edges_cp[1], e_arange)), shape=(e_max+1, num_edges)).tocsr()
+    
+    # convert to triplets
+    triplet_edges = passing_edges_csr_out.T * passing_edges_csr_in
+    triplet_edges = triplet_edges.tocoo()
+    
+    # convert back to pytorch
+    undirected_triplet_edges = torch.as_tensor(cp.stack([triplet_edges.row, triplet_edges.col]), device=device)
+    
+    # convert back to a single-direction edge list
+    if directed:
+        directed_map = torch.cat([torch.arange(num_edges/2), torch.arange(num_edges/2)]).int()
+        directed_triplet_edges = directed_map[undirected_triplet_edges.long()].long()
+        directed_triplet_edges = directed_triplet_edges[:, directed_triplet_edges[0] != directed_triplet_edges[1]] # Remove self-loops
+        directed_triplet_edges = directed_triplet_edges[:, directed_triplet_edges[0] < directed_triplet_edges[1]] # Remove duplicate edges
+        
+        return directed_triplet_edges, passing_y_truth[directed_triplet_edges].all(0), passing_y_pid_truth[directed_triplet_edges].all(0)
+    
+    else:
+        return undirected_triplet_edges, passing_y_truth[undirected_triplet_edges].all(0), passing_y_pid_truth[undirected_triplet_edges].all(0)
+
+
+def load_dataset_ssd(input_dir, num, pt_background_cut, pt_signal_cut, true_edges, noise):
+    if input_dir is not None:
+        all_events = os.listdir(input_dir)
+        all_events = sorted([os.path.join(input_dir, event) for event in all_events])[:num]
+        loaded_events = Gnn_dataloader(all_events, num, pt_background_cut, pt_signal_cut, true_edges, noise)
         return loaded_events
     else:
         return None
 
 
-def process_data(events, pt_background_cut, pt_signal_cut, noise, triplets):
+def load_dataset(input_dir, num, pt_background_cut, pt_signal_cut, true_edges, noise):
+    if input_dir is not None:
+        all_events = os.listdir(input_dir)
+        all_events = sorted([os.path.join(input_dir, event) for event in all_events])
+        loaded_events = [
+            torch.load(event, map_location=torch.device("cpu"))
+            for event in all_events[:num]
+        ]
+        loaded_events = select_data(loaded_events, pt_background_cut, pt_signal_cut, true_edges, noise)
+        return loaded_events
+    else:
+        return None
+
+def select_data(events, pt_background_cut, pt_signal_cut, true_edges, noise):
     # Handle event in batched form
     if type(events) is not list:
-        events = [events]
+        events = [events] 
 
     # NOTE: Cutting background by pT BY DEFINITION removes noise
-    if pt_background_cut > 0:
-        for i, event in enumerate(events):
-
-            if triplets:  # Keep all event data for posterity!
-                event = convert_triplet_graph(event)
-
-            else:
-                edge_mask = (event.pt[event.edge_index] > pt_background_cut).all(0)
-                event.edge_index = event.edge_index[:, edge_mask]
-                event.y = event.y[edge_mask]
-
-                if "y_pid" in event.__dict__.keys():
-                    event.y_pid = event.y_pid[edge_mask]
-
-                if "weights" in event.__dict__.keys():
-                    if event.weights.shape[0] == edge_mask.shape[0]:
-                        event.weights = event.weights[edge_mask]
-
-                if (
-                    "signal_true_edges" in event.__dict__.keys()
-                    and event.signal_true_edges is not None
-                ):
-                    signal_mask = (
-                        event.pt[event.signal_true_edges] > pt_signal_cut
-                    ).all(0)
-                    event.signal_true_edges = event.signal_true_edges[:, signal_mask]
-
+    if (pt_background_cut > 0):
+        for event in events:            
+            edge_mask = (event.pt[event.edge_index] > pt_background_cut).all(0)
+            event.edge_index = event.edge_index[:, edge_mask]
+            event.y = event.y[edge_mask]
+            event.y_pid = event.y_pid[edge_mask]
+                
+            if "weights" in event.__dict__.keys():
+                if event.weights.shape[0] == edge_mask.shape[0]:
+                    event.weights = event.weights[edge_mask]
+            
+            if "signal_true_edges" in event.__dict__.keys() and event.signal_true_edges is not None:
+                signal_mask = (event.pt[event.signal_true_edges] > pt_signal_cut).all(0)
+                event.signal_true_edges = event.signal_true_edges[:, signal_mask]
+    
     return events
 
-
-def convert_triplet_graph(event, edge_cut=0.5, directed=True):
-
-    triplet_edges, triplet_y_truth, triplet_y_pid_truth = build_triplets(
-        event, edge_cut, directed
-    )
-
-    triplet_x, triplet_cell_data = get_symmetric_values(
-        event.x, event.edge_index
-    ), get_symmetric_values(event.cell_data, event.edge_index)
-
-    (
-        event.doublet_edge_index,
-        event.doublet_y,
-        event.doublet_y_pid,
-        event.doublet_x,
-        event.doublet_cell_data,
-    ) = (event.edge_index, event.y, event.y_pid, event.x, event.cell_data)
-    event.edge_index, event.y, event.y_pid, event.x, event.cell_data = (
-        triplet_edges,
-        triplet_y_truth,
-        triplet_y_pid_truth,
-        triplet_x,
-        triplet_cell_data,
-    )
-
-    return event
-
-
-def build_triplets(graph, edge_cut=0.5, directed=True):
-
-    undir_graph = torch.cat([graph.edge_index, graph.edge_index.flip(0)], dim=-1)
-
-    # apply cut
-    passing_edges = undir_graph[:, graph.scores.repeat(2) > edge_cut]
-    passing_y_truth = graph.y[graph.scores > edge_cut]
-    passing_y_pid_truth = graph.y_pid[graph.scores > edge_cut]
-
-    # convert to cupy
-    passing_edges_cp = cp.asarray(passing_edges).astype("float32")
-
-    # make some utility objects
-    num_edges = passing_edges.shape[1]
-    e_ones = cp.array([1] * num_edges).astype("float32")
-    e_arange = cp.arange(num_edges).astype("float32")
-    e_max = passing_edges.max().item()
-
-    # build sparse edge array
-    passing_edges_csr_in = cp.sparse.coo_matrix(
-        (e_ones, (passing_edges_cp[0], e_arange)), shape=(e_max + 1, num_edges)
-    ).tocsr()
-    passing_edges_csr_out = cp.sparse.coo_matrix(
-        (e_ones, (passing_edges_cp[1], e_arange)), shape=(e_max + 1, num_edges)
-    ).tocsr()
-
-    # convert to triplets
-    triplet_edges = passing_edges_csr_out.T * passing_edges_csr_in
-    triplet_edges = triplet_edges.tocoo()
-
-    # convert back to pytorch
-    undirected_triplet_edges = torch.as_tensor(
-        cp.stack([triplet_edges.row, triplet_edges.col]), device=device
-    )
-
-    # convert back to a single-direction edge list
-    if directed:
-        directed_map = torch.cat(
-            [torch.arange(num_edges / 2), torch.arange(num_edges / 2)]
-        ).int()
-        directed_triplet_edges = directed_map[undirected_triplet_edges.long()].long()
-        directed_triplet_edges = directed_triplet_edges[
-            :, directed_triplet_edges[0] != directed_triplet_edges[1]
-        ]  # Remove self-loops
-        directed_triplet_edges = directed_triplet_edges[
-            :, directed_triplet_edges[0] < directed_triplet_edges[1]
-        ]  # Remove duplicate edges
-
-        return (
-            directed_triplet_edges,
-            passing_y_truth[directed_triplet_edges].all(0),
-            passing_y_pid_truth[directed_triplet_edges].all(0),
-        )
-
-    else:
-        return (
-            undirected_triplet_edges,
-            passing_y_truth[undirected_triplet_edges].all(0),
-            passing_y_pid_truth[undirected_triplet_edges].all(0),
-        )
-
-
-def get_symmetric_values(x, e):
-    x_mean = (x[e[0]] + x[e[1]]) / 2
-    x_diff = (x[e[0]] - x[e[1]]).abs()
-
-    return torch.cat([x_mean, x_diff], dim=-1)
-
-
-def purity_sample(truth, target_purity, regime):
-
+def purity_sample(batch, target_purity, regime):
+    
+    truth = batch.y_pid.bool() if "pid" in regime else batch.y.bool()
     # Get true edges
     true_edges = torch.where(truth)[0]
     num_true = true_edges.shape[0]
-
+    
     # Get fake edges
     fake_edges = torch.where(~truth)[0]
-
+    
     # Sample fake edges
     num_fakes_to_sample = int(num_true * (1 - target_purity) / target_purity)
-    fake_edges_sample = fake_edges[
-        torch.randperm(len(fake_edges))[:num_fakes_to_sample]
-    ]
-
+    fake_edges_sample = fake_edges[torch.randperm(len(fake_edges))[:num_fakes_to_sample]]  
+    
     # Mix together
     combined_edges = torch.cat([true_edges, fake_edges_sample])
     combined_edges = combined_edges[torch.randperm(len(combined_edges))]
-
+    
     edge_sample = batch.edge_index[:, combined_edges]
     truth_sample = batch.y_pid[combined_edges]
     return edge_sample, truth_sample
-
 
 def random_edge_slice_v2(delta_phi, batch):
     """
@@ -323,7 +276,6 @@ def make_mlp(
     hidden_activation="ReLU",
     output_activation="ReLU",
     layer_norm=False,
-    batch_norm=False,
 ):
     """Construct an MLP with specified fully-connected layers."""
     hidden_activation = getattr(nn, hidden_activation)
@@ -337,16 +289,12 @@ def make_mlp(
         layers.append(nn.Linear(sizes[i], sizes[i + 1]))
         if layer_norm:
             layers.append(nn.LayerNorm(sizes[i + 1]))
-        if batch_norm:
-            layers.append(nn.BatchNorm1d(sizes[i + 1]))
         layers.append(hidden_activation())
     # Final layer
     layers.append(nn.Linear(sizes[-2], sizes[-1]))
     if output_activation is not None:
         if layer_norm:
             layers.append(nn.LayerNorm(sizes[-1]))
-        if batch_norm:
-            layers.append(nn.BatchNorm1d(sizes[i + 1]))
         layers.append(output_activation())
     return nn.Sequential(*layers)
 
