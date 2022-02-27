@@ -28,16 +28,12 @@ class EdgeEmbeddingBase(LightningModule):
         Initialise the Lightning Module that can scan over different filter training regimes
         """
         self.save_hyperparameters(hparams)
-        
-        if "logger" in self.__dict__.keys() and "_experiment" in self.logger.__dict__.keys():
-            self.logger.experiment.define_metric("val_loss" , summary="min")
-            self.logger.experiment.define_metric("auc" , summary="max")
             
         self.cos = nn.CosineSimilarity()
 
     def setup(self, stage):
-        # Handle any subset of [train, val, test] data split, assuming that ordering
         
+        # For now I only use single input which is the test set of the upstream pipeline
         input_dir = self.hparams["input_dir"]
         paths = load_dataset_paths(input_dir, sum(self.hparams["train_split"]))
         self.trainset, self.valset, self.testset = random_split(paths, self.hparams["train_split"], generator=torch.Generator().manual_seed(0))
@@ -106,33 +102,38 @@ class EdgeEmbeddingBase(LightningModule):
         cut = self.hparams["signal_pt_cut"] - self.hparams["signal_pt_interval"]
         cap = self.hparams["signal_pt_cut"]
         
-        return minimum(h(pt-cut)*(pt-cut)/(cap-cut)) + (eps * h(pt-cap) * (pt-cap)) + self.hparams["weight_min"]
+        return minimum((1 - self.hparams["weight_min"])*h(pt-cut)*(pt-cut)/(cap-cut)) + (eps * h(pt-cap) * (pt-cap)) + self.hparams["weight_min"]
     
     def get_true_triplets(self, batch, ind, neighbors):
 
-        # Build Triplets by constructing fully connected graph at each site and filtering out self-loops 
+        # Build Triplets by constructing fully connected graph at each node 
         lengths = (neighbors >= 0).sum(-1)
         triplets = torch.arange(neighbors.shape[1], device = self.device).repeat((neighbors.shape[0], neighbors.shape[1], 1))
-        triplets[triplets >= lengths.unsqueeze(1).unsqueeze(2)] = -1
+        
+        # cut the triplets consists of non-existing doublets in third axis
+        # to be honest this might not be needed since existence mask can do its work anyway
+        triplets[triplets >= lengths.reshape((-1, 1, 1))] = -1
+        # removing self-loops
         triplets[triplets == torch.arange(neighbors.shape[1], device = self.device).unsqueeze(0).unsqueeze(2).expand(neighbors.shape[0], -1, neighbors.shape[1])] = -1
         
-        # Turn not existing edges' embedding into nan
+        # return the mask of non-existing doublets for further usage
         existence_mask = neighbors >= 0
 
         # Get weights
         weights = self.pt_to_weight(batch.pt[ind])
+        # balance nodes with high connectivity (might have a more natural way to do?)
         weights = weights/((neighbors >= 0).sum(-1) + 1e-12)
 
-        # Weighting merged nodes with higher weights
+        # Weighting merged nodes with higher weights to compensate the punishment endured in fake section
         merged_nodes = (batch.pid[ind.unsqueeze(1).expand(neighbors.shape)] != batch.pid[neighbors]).any(1)
         weights[merged_nodes] = self.hparams["merged_weight_ratio"] * weights[merged_nodes]
 
-        weights = weights.unsqueeze(1).unsqueeze(2).expand(triplets.shape)
+        weights = weights.reshape((-1, 1, 1)).expand(triplets.shape)
         
         return triplets, weights, existence_mask
     
     def get_fake_triplets(self, embedding1, embedding2, batch, ind, idxs, r_max, k_max):
-        # Get triplets by FRNN search
+        # Get triplets with FRNN search
         with torch.no_grad():
             triplets = find_neighbors(embedding1, embedding2, idxs, r_max=r_max, k_max=k_max)
         indices = ind.repeat((idxs.shape[1], 1)).T.long()
@@ -141,10 +142,10 @@ class EdgeEmbeddingBase(LightningModule):
         existence_mask = (idxs >= 0)
         pid_mask = batch.pid[indices.long()] != batch.pid[idxs.long()]
 
-        # Get weights for each center
+        # Get weights for each node
         weights = self.pt_to_weight(batch.pt[ind])
         weights = weights/((idxs >= 0).sum(-1) + 1e-12)
-        weights = weights.unsqueeze(1).unsqueeze(2).expand(triplets.shape)
+        weights = weights.reshape((-1, 1, 1)).expand(triplets.shape)
         
         return triplets, weights, existence_mask, pid_mask
         
@@ -160,31 +161,40 @@ class EdgeEmbeddingBase(LightningModule):
             
         else: raise Exception("Please input a valid mode")
         
+        # Since double index select is still not available for torch, flatten doublet embedding to get hinge distance
+        
         # (i, j, k) = i*knn + j
         in_edges = torch.arange(triplets.shape[0]*triplets.shape[1],device = self.device)
         in_edges = in_edges.reshape((triplets.shape[0], triplets.shape[1])).unsqueeze(2).expand(-1,-1, triplets.shape[2])
         # (i, j, k) = i*knn + Tri(i,j,k)
-        out_edges = (triplets + (torch.arange(triplets.shape[0], device = self.device) * triplets.shape[1]).unsqueeze(1).unsqueeze(2))
+        out_edges = (triplets + (torch.arange(triplets.shape[0], device = self.device) * triplets.shape[1]).reshape((-1, 1, 1)))
         
+        # flatten them according to triplets positions
         in_edges = in_edges[triplets >= 0]
         out_edges = out_edges[triplets >= 0]
         weights = weights[triplets >= 0]
         
+        # flatten the first two dimensions of embeddings (i.e. the shape of adjacency list)
         embedding1 = embedding1.reshape((-1, embedding1.shape[-1]))
         embedding2 = embedding2.reshape((-1, embedding2.shape[-1]))
         
         existence_mask = existence_mask.flatten()
         
+        # mask out any triplet involving not existing doublets
         mask = existence_mask[in_edges] & existence_mask[out_edges]
         if pid_mask is not None:
+            
+            # for fake section we also need to mask out any pid true triplet
             pid_mask = pid_mask.flatten()
             mask = mask & (pid_mask[in_edges] | pid_mask[out_edges])
         
+        # hinge distance given by geodesic distance
         d = torch.acos((1-1e-4)*self.cos(embedding1[in_edges], embedding2[out_edges]))
 
         d = d[mask]
         weights = weights[mask]
-
+        
+        # might not needed, just to avoid any nan 
         weights = weights[d == d]
         d = d[d == d]
         weights = weights/(weights.sum() + 1e-12)
@@ -202,21 +212,23 @@ class EdgeEmbeddingBase(LightningModule):
         input_data = self.get_input_data(batch)
         
         # inference section
-        
+        # get fake samples from output of upstream pipeline
         fake_positive_idxs = batch.idxs >= 0
         fake_edges = torch.stack([batch.ind.unsqueeze(1).expand(batch.idxs.shape)[fake_positive_idxs], batch.idxs[fake_positive_idxs]]).long()
         
+        # get true samples from modulewise truth, selecting only the doublets containing the nodes in ind
         neighbors = build_neighbors_list(batch.pid, batch.modulewise_true_edges, device = self.device)[batch.ind]
         true_positive_idxs = neighbors >= 0
         true_edges = torch.stack([batch.ind.unsqueeze(1).expand(neighbors.shape)[true_positive_idxs], neighbors[true_positive_idxs]]).long()
         
+        # forward propagate them together
         output1, output2 = self(
             input_data,
             torch.cat([fake_edges, true_edges], dim = 1)
         )
         
         # Fake section 
-        
+        # Formatting the embeddings in (node smaples, maximum connectivity, embedding dimension)
         fake_embedding1 = torch.zeros(batch.idxs.shape[0], batch.idxs.shape[1], self.hparams["emb_dim"], device = self.device)
         fake_embedding1[fake_positive_idxs] = output1[:fake_edges.shape[1],:]
         
@@ -231,7 +243,7 @@ class EdgeEmbeddingBase(LightningModule):
                                                                    mode = "pid_fake")
         
         # True section
-    
+        # pretty similar to fake section
         true_embedding1 = torch.zeros(neighbors.shape[0], neighbors.shape[1], self.hparams["emb_dim"], device = self.device)
         true_embedding1[true_positive_idxs] = output1[fake_edges.shape[1]:,:]
         
@@ -246,6 +258,7 @@ class EdgeEmbeddingBase(LightningModule):
         
         d = torch.cat([fake_d, true_d], dim = 0)
         hinge = torch.cat([fake_hinge, true_hinge], dim = 0)
+        # normalize the weights so that they sum to one
         weights = torch.cat([fake_weights, self.hparams["weight_ratio"]*true_weights], dim = 0)/(1 + self.hparams["weight_ratio"])
         
         loss = torch.nn.functional.hinge_embedding_loss(
@@ -261,6 +274,7 @@ class EdgeEmbeddingBase(LightningModule):
     def get_truth_val_triplets(self, batch, full_ind, sample_edges, input_data):
         full_d = []
         neighbors_list = build_neighbors_list(batch.pid, sample_edges, device = self.device)
+        # chunk truth graph into three chunks to avoid memory issues
         for ind in torch.chunk(full_ind, 3, dim = 0):
             neighbors = neighbors_list[ind].long()
             positive_idxs = neighbors >= 0
@@ -285,7 +299,7 @@ class EdgeEmbeddingBase(LightningModule):
             in_edges = torch.arange(triplets.shape[0]*triplets.shape[1],device = self.device)
             in_edges = in_edges.reshape((triplets.shape[0], triplets.shape[1])).unsqueeze(2).expand(-1,-1, triplets.shape[2])
             # (i, j, k) = i*knn + Tri(i,j,k)
-            out_edges = (triplets + (torch.arange(triplets.shape[0], device = self.device) * triplets.shape[1]).unsqueeze(1).unsqueeze(2))
+            out_edges = (triplets + (torch.arange(triplets.shape[0], device = self.device) * triplets.shape[1]).reshape((-1, 1, 1)))
 
             in_edges = in_edges[triplets >= 0]
             out_edges = out_edges[triplets >= 0]
@@ -297,6 +311,7 @@ class EdgeEmbeddingBase(LightningModule):
             true_embedding1 = true_embedding1.reshape((-1, true_embedding1.shape[2]))
             true_embedding2 = true_embedding2.reshape((-1, true_embedding2.shape[2]))
             
+            # Instead of geodesic distance, use euclidean distance which is compatible with FRNN
             d = (true_embedding1[in_edges] - true_embedding2[out_edges]).square().sum(-1).sqrt()
                 
             full_d.append(d[mask].clone().detach())
@@ -315,12 +330,15 @@ class EdgeEmbeddingBase(LightningModule):
         d_found = self.get_truth_val_triplets(batch, full_ind, batch.found_edges, input_data)
         d_found, _ = d_found.sort()
         
+        # find the radius that can satify the efficiency requirement on found subset with pt cut
         radius = d_found[int(self.hparams["max_eff"]*len(d_found))].clone().detach().item()
         truth_true_positive = (d_found <= radius).sum()
         
+        # For purity purpose we also need the number of positive triplets in found subset without cut
         d_all = self.get_truth_val_triplets(batch, full_ind, batch.found_edges_nocut, input_data)
         truth_true_positive_all = (d_all <= radius).sum()
         
+        # For denominator of efficiency, we can simply calculate it with math: n(n-1)
         truth_true = (build_neighbors_list(batch.pid, batch.signal_edges, device = self.device) >= 0).sum(-1)
         truth_true = (truth_true * (truth_true - 1)).sum()
         
@@ -329,6 +347,7 @@ class EdgeEmbeddingBase(LightningModule):
         prediction_positive = torch.tensor([0], device = self.device)
         prediction_positive_cut = torch.tensor([0], device = self.device)
         
+        # unresolved: i dont know why the chucks get an extra index so i have to use idxs[0] instead of just idxs
         for (idxs, ind) in zip(batch.idxs[0], batch.ind[0]):
             positive_idxs = idxs >= 0
             edges = torch.stack([ind.unsqueeze(1).expand(idxs.shape)[positive_idxs], idxs[positive_idxs]]).long()
@@ -338,6 +357,8 @@ class EdgeEmbeddingBase(LightningModule):
                 edges
             )
             mask = torch.zeros(idxs.shape, device = self.device).bool()
+            
+            # mask out low pt tracks for cut metrics
             mask[positive_idxs] = ((batch.pt[idxs[positive_idxs]] > self.hparams["signal_pt_cut"]) |
                                    (batch.pt[ind.unsqueeze(1).expand(idxs.shape)[positive_idxs]] > self.hparams["signal_pt_cut"]))
 
@@ -347,6 +368,7 @@ class EdgeEmbeddingBase(LightningModule):
             embedding2[positive_idxs] = output2
             
             triplets = find_neighbors(embedding1, embedding2, idxs, r_max = radius, k_max = 100)
+            # get the graph size
             prediction_positive = prediction_positive + (triplets >= 0).sum()
             prediction_positive_cut = prediction_positive_cut + (triplets[mask] >= 0).sum()
             

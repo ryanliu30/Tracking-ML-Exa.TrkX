@@ -15,23 +15,35 @@ def build_neighbors_list(nodes, edges, device = "cuda"):
     
     if torch.is_tensor(edges):
         edges = edges.cpu().numpy()
-        
+    
+    # Build adjacency matrix in COO form
     neighbors_list = sparse.coo_matrix((np.ones(edges.shape[1]), edges),
                                    shape=(nodes.shape[0], nodes.shape[0])).tocsr()
+    # Symmetrize to get bidirectional graph
     neighbors_list = (neighbors_list + neighbors_list.T) > 0
+    
+    # Get connectivity of each node
     counts = neighbors_list.sum(axis = 1)
     
     max_neighbors = counts.max()
-        
+    
+    # Calculate how many -1 paddings needed for each row/colunm
     counts = torch.tensor(max_neighbors - counts).to(device)
     counts[counts < 0] = 0
+    
+    # Append paddings in new rows (N,N)->(N, N+max neighbors), new spaces are filled with paddings needed
+    # Represent paddings with indices greater than N
     indices = torch.arange(nodes.shape[0], nodes.shape[0] + max_neighbors).repeat((nodes.shape[0],1)).long().to(device)
     indices[indices >= counts.to(device) + nodes.shape[0]] = -1
     positive_indices = indices >= 0
     idx = torch.arange(nodes.shape[0]).repeat((max_neighbors,1)).T.to(device)
+    
+    # turn them into COO format
     complement_row = idx[positive_indices].cpu().numpy()
     complement_col = indices[positive_indices].cpu().numpy()
     neighbors_list = neighbors_list.tocoo()
+    
+    # Concatenate them to get a larger COO matrix
     neighbors_list = sparse.coo_matrix((np.ones(len(neighbors_list.row) + len(complement_row)),
                                         (np.concatenate([neighbors_list.row, complement_row], axis = 0),
                                           np.concatenate([neighbors_list.col, complement_col], axis = 0)
@@ -40,14 +52,19 @@ def build_neighbors_list(nodes, edges, device = "cuda"):
                                        shape=(nodes.shape[0], nodes.shape[0] + max_neighbors)
                                       ).tocsr()
     
+    # CSR form can automatically be reshaped into adjacency list if padding is done properly
     neighbors_list = neighbors_list.indices.reshape((nodes.shape[0], max_neighbors))
     neighbors_list = torch.tensor(neighbors_list, device = device)
+    
+    # Turn the indices appended for padding back into -1
     neighbors_list[neighbors_list >= nodes.shape[0]] = -1
     
     return neighbors_list
 
 
 def smaple_triplets(nodes, edges, n_triplets_per_node, neighbors = None, device = "cuda"):
+    
+    # This uitility is not used in current version
     
     if neighbors == None:
         neighbors = build_neighbors_list(nodes, edges)
@@ -88,13 +105,17 @@ class EdgeEmbeddingDataset(Dataset):
         
     def __getitem__(self, key):
         
-        pt_cut = self.hparams["signal_pt_cut"] - self.hparams["signal_pt_interval"]
+        # load the event and cut edges according to assigned score cut
         
         event = torch.load(self.dirs[key], map_location=torch.device(self.device))
         event.idxs = event.idxs.long()
         event.idxs[event.idxs_scores < self.hparams["score_cut"]] = -1
         
+        # shuffle the order of doublets of each node to aviod training bias
+        
         event.idxs = event.idxs[:, torch.randperm(event.idxs.shape[1])]
+        
+        # sorting only according to their sign to make paddings come after all doublets
         
         indices = torch.argsort((event.idxs >= 0).int().reshape(event.idxs.shape), descending = True)
         indices = (indices + torch.arange(indices.shape[0], device = self.device).unsqueeze(1)*indices.shape[1]).flatten()
@@ -102,18 +123,26 @@ class EdgeEmbeddingDataset(Dataset):
         event.idxs = event.idxs.long()
         
         if self.hparams["cheat"]:
+            
+            # If cheating feature is used, construct the adjacency list by concatenating truth graph with assigned number of fake samples. Note that the 
+            # proceeding graph construction will automatically symmetrize the graph so the number is approximately twice the number assigned here
+            
             idxs = event.idxs[:, :self.hparams["cheating_doublet_per_node"]]
             positive_idxs = (idxs >= 0)
             cheat_edges = torch.stack([torch.arange(event.pid.shape[0], device = self.device).unsqueeze(1).expand(idxs.shape)[positive_idxs], idxs[positive_idxs]]).long()
             event.idxs = build_neighbors_list(event.pid, torch.cat([cheat_edges, event.modulewise_true_edges], dim = 1), device = self.device).long()
         
-        
         if self.stage == "train":
+            
+            # ind: the node list
+            # idxs: the corresponding doublet list
             
             event.ind = torch.randperm(event.idxs.shape[0])[:self.hparams["n_nodes"]]    
             event.idxs = event.idxs[event.ind,:self.hparams["edges_per_nodes"]]
             
         else:
+            
+            # get the true edges found in embedding & filtering
             positive_idxs = (event.idxs >= 0)
             found_edges = torch.stack([torch.arange(event.pid.shape[0], device = self.device).unsqueeze(1).expand(event.idxs.shape)[positive_idxs], event.idxs[positive_idxs]]).long()
             
@@ -121,10 +150,12 @@ class EdgeEmbeddingDataset(Dataset):
             found_edges = found_edges[:,y == 1]
                 
             event.found_edges_nocut = found_edges.clone()
-            event.found_edges = found_edges[:,(event.pt[found_edges] > self.hparams["signal_pt_cut"]).any(0)].clone()
             
+            # apply cut to the edges for the cut metrics
+            event.found_edges = found_edges[:,(event.pt[found_edges] > self.hparams["signal_pt_cut"]).any(0)].clone()
             event.signal_edges = event.modulewise_true_edges[:,(event.pt[event.modulewise_true_edges] > self.hparams["signal_pt_cut"]).any(0)].clone()
             
+            # Instead of random, use chunk to divide the graph
             event.ind = torch.chunk(
                 torch.arange(event.idxs.shape[0]),
                 self.hparams["n_chunks"]
@@ -140,6 +171,8 @@ def find_neighbors(embedding1, embedding2, neighbors, r_max=1.0, k_max=10):
     
     lengths = (neighbors >= 0).sum(-1)
     lengths_nozero = lengths.clone().detach()
+    
+    # FRNN will raise error if length 2 is zero
     lengths_nozero[lengths_nozero==0] = 1
 
     _, idxs, _, _ = frnn.frnn_grid_points(points1 = embedding1,
