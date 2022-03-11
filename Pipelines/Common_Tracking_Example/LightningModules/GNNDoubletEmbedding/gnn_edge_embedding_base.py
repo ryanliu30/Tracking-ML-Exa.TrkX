@@ -41,7 +41,7 @@ class EdgeEmbeddingBase(LightningModule):
     def train_dataloader(self):
         self.trainset = EdgeEmbeddingDataset(self.trainset, self.hparams, stage = "train", device = "cpu")
         if self.trainset is not None:
-            return DataLoader(self.trainset, batch_size=1, num_workers=1, shuffle = True)
+            return DataLoader(self.trainset, batch_size=1, num_workers=1)
         else:
             return None
 
@@ -346,8 +346,6 @@ class EdgeEmbeddingBase(LightningModule):
         
         prediction_positive = torch.tensor([0], device = self.device)
         prediction_positive_cut = torch.tensor([0], device = self.device)
-        high_pt_triplets = torch.tensor([0], device = self.device)
-        noise_triplets = torch.tensor([0], device = self.device)
         
         # unresolved: i dont know why the chucks get an extra index so i have to use idxs[0] instead of just idxs
         for (idxs, ind) in zip(batch.idxs[0], batch.ind[0]):
@@ -373,12 +371,7 @@ class EdgeEmbeddingBase(LightningModule):
             # get the graph size
             prediction_positive = prediction_positive + (triplets >= 0).sum()
             prediction_positive_cut = prediction_positive_cut + (triplets[mask] >= 0).sum()
-            high_pt_triplets = high_pt_triplets + (triplets[batch.pt[ind] > self.hparams["signal_pt_cut"]] >= 0).sum()
-            noise_triplets = noise_triplets + (triplets[batch.pid[ind] == 0] >= 0).sum()
-        
-        mean_triplets = prediction_positive/len(batch.pid)
-        high_pt_triplets = high_pt_triplets/(batch.pt > self.hparams["signal_pt_cut"]).sum()
-        noise_triplets = noise_triplets/(batch.pid == 0).sum()
+            
         
         if log:
             current_lr = self.optimizers().param_groups[0]["lr"]
@@ -389,9 +382,6 @@ class EdgeEmbeddingBase(LightningModule):
                     "eff": (truth_true_positive/truth_true).clone().detach(),
                     "pur": (truth_true_positive_all/prediction_positive).clone().detach(),
                     "cut_pur": (truth_true_positive/prediction_positive_cut).clone().detach(),
-                    "mean_triplets": mean_triplets,
-                    "high_pt_triplets": high_pt_triplets,
-                    "noise_triplets": noise_triplets,
                     "current_lr": current_lr,
                 }
             )

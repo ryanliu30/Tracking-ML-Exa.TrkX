@@ -1,42 +1,36 @@
 # Input/output configuration
-input_dir: /global/cfs/cdirs/m3443/usr/ryanliu/ITk_filter/filter_processed/test
+input_dir: /global/cfs/cdirs/m3443/data/ITk-upgrade/processed/feature_store/feature_store_modulewise_barrel_v2
 
 # Dataset parameters
-train_split: [200, 2, 0] # Number of [training, validation, testing] examples
+train_split: [1000, 5, 1000] # Number of [training, validation, testing] examples
 signal_pt_interval: 500.
 signal_pt_cut: 1000.
 weight_leak: 0.0
-merged_weight_ratio: 10
-weight_min: 0.2
-score_cut: 0.296
-n_nodes: 10000
-edges_per_nodes: 20
-n_chunks: 10
-cheat: False
-cheating_doublet_per_node: 2
+weight_min: 0.0
 
 # Model parameters
 spatial_channels: 3
 emb_dim: 16
-max_eff: 0.8
+max_eff: 0.98
 hidden: 1024
 cell_channels: 8
-nb_layer: 5
-weight_ratio: 1
+nb_layer: 6
+weight_ratio: 4
 r_train: 1.0
 r_val: 1.0
-r_test: 1.5
-knn: 10
-warmup: 200
-margin: 1.5
-lr: 0.0001
+r_test: 1.0
+use_bidir_truth: True
+use_geodesic_distance: True
+use_dual_encoder: True
+knn: 30
+warmup: 1000
+margin: 1.0
+lr: 0.00005
 factor: 0.3
 patience: 5
 regime: [ci]
 max_epochs: 10
 max_steps: 10000
-anti_sym: True
-use_difference: False
 
 # Postprocessing
 callbacks: EmbeddingTelemetry #[EmbeddingInferenceCallback, 

@@ -1,0 +1,5 @@
+use_bidir_truth: {"values": [True, False]}
+# use_geodesic_distance: {"values": [False, True]}
+# use_dual_encoder: {"values": [False, True]}
+weight_ratio: {"values": [0.5, 0.75, 1.0, 1.5, 2., 3., 4., 6., 8.]}
+margin: {"values": [0.5, 0.75, 1.0]}

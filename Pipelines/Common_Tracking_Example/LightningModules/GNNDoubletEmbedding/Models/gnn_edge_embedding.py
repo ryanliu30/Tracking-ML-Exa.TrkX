@@ -88,10 +88,13 @@ class VanillaEdgeEmbedding(EdgeEmbeddingBase):
         for l in self.layers1:
             x1 = l(x1)
             x1 = self.act(x1)
-            
+            if self.hparams["layernorm"]:
+                x1 = F.layer_norm(x1, (l.out_features,))  # Option of LayerNorm
         for l in self.layers2:
             x2 = l(x2)
             x2 = self.act(x2)
+            if self.hparams["layernorm"]:
+                x2 = F.layer_norm(x2, (l.out_features,))  # Option of LayerNorm
                 
         x1 = self.output_layer1(x1)
         x1 = nn.functional.normalize(x1, p=2.0, dim=1, eps=1e-12)
