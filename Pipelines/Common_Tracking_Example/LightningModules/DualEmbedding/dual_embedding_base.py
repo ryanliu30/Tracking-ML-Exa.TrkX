@@ -104,9 +104,9 @@ class DualEmbeddingBase(LightningModule):
         
         return minimum((1 - self.hparams["weight_min"])*h(pt-cut)*(pt-cut)/(cap-cut)) + (eps * h(pt-cap) * (pt-cap)) + self.hparams["weight_min"]
     
-    def get_hnm_negative_pairs(self, batch, embedding1, embedding2):
+    def get_hnm_negative_pairs(self, batch, embedding1, embedding2, radius):
         
-        idxs = find_neighbors(embedding1.clone().detach(), embedding2.clone().detach(), r_max=self.hparams["r_train"], k_max=self.hparams["knn"])
+        idxs = find_neighbors(embedding1.clone().detach(), embedding2.clone().detach(), r_max=radius, k_max=self.hparams["knn"])
         
         positive_idxs = idxs >= 0
         ind = torch.arange(idxs.shape[0], device = self.device).unsqueeze(1).expand(idxs.shape)
@@ -120,23 +120,27 @@ class DualEmbeddingBase(LightningModule):
         
         input_data = self.get_input_data(batch)
         
-        embedding1, embedding2 = self(input_data)     
+        embedding1, embedding2 = self(input_data) 
         
+        with torch.no_grad():
+            high_pt_edges = batch.true_edges[:, (batch.pt[batch.true_edges] > self.hparams["signal_pt_cut"]).any(0)]
+
+            truth_d = torch.sqrt((embedding1[high_pt_edges[0]]
+                                  - embedding2[high_pt_edges[1]]).square().sum(-1) + 1e-12)
+
+            truth_d, _ = truth_d.sort()
+
+            radius = truth_d[int(self.hparams["max_eff"]*len(truth_d))].item()
         
-        fake_edges = self.get_hnm_negative_pairs(batch, embedding1, embedding2)
+        fake_edges = self.get_hnm_negative_pairs(batch, embedding1, embedding2, radius)
         
-        hinge = torch.cat([torch.ones(batch.modulewise_true_edges.shape[1], device = self.device),
+        hinge = torch.cat([torch.ones(batch.true_edges.shape[1], device = self.device),
                           -torch.ones(fake_edges.shape[1], device = self.device)
                           ], dim = 0)
         
-        edges = torch.cat([batch.modulewise_true_edges,
+        edges = torch.cat([batch.true_edges,
                           fake_edges
                           ], dim = 1)
-        
-        if self.hparams["use_geodesic_distance"]:
-            d = torch.acos((1 - 1e-4)*self.cos(embedding1[edges[0]], embedding2[edges[1]]))
-        else:
-            d = torch.sqrt((embedding1[edges[0]] - embedding2[edges[1]]).square().sum(-1) + 1e-12)
         
         weights = self.pt_to_weight(batch.pt)
         weights = weights[edges[0]] + weights[edges[1]]
@@ -149,11 +153,19 @@ class DualEmbeddingBase(LightningModule):
         weights = weights/(1 + self.hparams["weight_ratio"])
         
         
+        if self.hparams["use_geodesic_distance"]:
+            d = torch.acos((1 - 1e-4)*self.cos(embedding1[edges[0]], embedding2[edges[1]]))
+            radius = torch.acos(torch.tensor(1 - 0.5*(radius**2), device = self.device))
+        else:
+            d = torch.sqrt((embedding1[edges[0]] - embedding2[edges[1]]).square().sum(-1) + 1e-12)
+        
+         
         loss = torch.nn.functional.hinge_embedding_loss(
-            d, hinge, margin=self.hparams["margin"], reduction="none"
+            d/radius, hinge, margin=1, reduction="none"
         )
 
-        loss = torch.dot(weights.to(loss), loss.square())/self.hparams["margin"]**2
+        loss = torch.dot(weights.to(loss), loss.square())
+        
             
         self.log("train_loss", loss)
 
@@ -168,7 +180,7 @@ class DualEmbeddingBase(LightningModule):
         input_data = self.get_input_data(batch)
         embedding1, embedding2 = self(input_data)
         
-        high_pt_edges = batch.modulewise_true_edges[:, (batch.pt[batch.modulewise_true_edges] > self.hparams["signal_pt_cut"]).any(0)]
+        high_pt_edges = batch.true_edges[:, (batch.pt[batch.true_edges] > self.hparams["signal_pt_cut"]).any(0)]
         
         truth_d = torch.sqrt((embedding1[high_pt_edges[0]]
                               - embedding2[high_pt_edges[1]]).square().sum(-1) + 1e-12)
@@ -185,18 +197,15 @@ class DualEmbeddingBase(LightningModule):
                             idxs[positive_idxs]
                             ], dim = 0)
         
-        e_bidir = torch.cat([batch.modulewise_true_edges,
-                            batch.modulewise_true_edges.flip(0)
-                            ], dim = 1)
         easy_fakes = edges[:,batch.pid[edges[0]]!=batch.pid[edges[1]]]
         e_ambiguous = edges[:,batch.pid[edges[0]]==batch.pid[edges[1]]]
         
-        new_e_ambiguous, y = graph_intersection(e_ambiguous, batch.modulewise_true_edges)
+        new_e_ambiguous, y = graph_intersection(e_ambiguous, batch.true_edges)
         
         y = torch.cat([torch.zeros(easy_fakes.shape[1], device = self.device), y.to(self.device)], dim = 0)
         edges = torch.cat([easy_fakes, new_e_ambiguous.to(self.device)], dim = 1)
         
-        eff = (y.sum()/batch.modulewise_true_edges.shape[1]).item()
+        eff = (y.sum()/batch.true_edges.shape[1]).item()
         cut_eff = (y[(batch.pt[edges] > self.hparams["signal_pt_cut"]).all(0)].sum()/high_pt_edges.shape[1]).item()
         pur = (y.sum()/len(y)).item()
         cut_pur = (y[(batch.pt[edges] > self.hparams["signal_pt_cut"]).all(0)].sum()/len(y)).item()      

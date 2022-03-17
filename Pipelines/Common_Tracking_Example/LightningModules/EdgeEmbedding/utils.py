@@ -148,8 +148,6 @@ class EdgeEmbeddingDataset(Dataset):
             
             found_edges, y = graph_intersection(found_edges, event.modulewise_true_edges)
             found_edges = found_edges[:,y == 1]
-                
-            event.found_edges_nocut = found_edges.clone()
             
             # apply cut to the edges for the cut metrics
             event.found_edges = found_edges[:,(event.pt[found_edges] > self.hparams["signal_pt_cut"]).any(0)].clone()

@@ -334,10 +334,6 @@ class EdgeEmbeddingBase(LightningModule):
         radius = d_found[int(self.hparams["max_eff"]*len(d_found))].clone().detach().item()
         truth_true_positive = (d_found <= radius).sum()
         
-        # For purity purpose we also need the number of positive triplets in found subset without cut
-        d_all = self.get_truth_val_triplets(batch, full_ind, batch.found_edges_nocut, input_data)
-        truth_true_positive_all = (d_all <= radius).sum()
-        
         # For denominator of efficiency, we can simply calculate it with math: n(n-1)
         truth_true = (build_neighbors_list(batch.pid, batch.signal_edges, device = self.device) >= 0).sum(-1)
         truth_true = (truth_true * (truth_true - 1)).sum()
@@ -387,8 +383,7 @@ class EdgeEmbeddingBase(LightningModule):
                 {
                     "dist@{}".format(self.hparams["max_eff"]): radius,
                     "eff": (truth_true_positive/truth_true).clone().detach(),
-                    "pur": (truth_true_positive_all/prediction_positive).clone().detach(),
-                    "cut_pur": (truth_true_positive/prediction_positive_cut).clone().detach(),
+                    "pur": (truth_true_positive/prediction_positive).clone().detach(),
                     "mean_triplets": mean_triplets,
                     "high_pt_triplets": high_pt_triplets,
                     "noise_triplets": noise_triplets,
@@ -398,8 +393,7 @@ class EdgeEmbeddingBase(LightningModule):
         return {
                 "dist@{}".format(self.hparams["max_eff"]): radius,
                 "eff": (truth_true_positive/truth_true).clone().detach(),
-                "pur": (truth_true_positive_all/prediction_positive).clone().detach(),
-                "cut_pur": (truth_true_positive/prediction_positive_cut).clone().detach(),
+                "pur": (truth_true_positive/prediction_positive).clone().detach(),
                 "current_lr": current_lr
                }
 

@@ -33,8 +33,11 @@ class DualEmbeddingDataset(Dataset):
         
         event = torch.load(self.dirs[key], map_location=torch.device(self.device))
         if self.hparams["use_bidir_truth"]:
-            event.modulewise_true_edges = torch.cat([event.modulewise_true_edges,
-                                                    event.modulewise_true_edges.flip(0)], dim = 1)
+            event.true_edges = torch.cat([event.modulewise_true_edges,
+                                          event.modulewise_true_edges.flip(0)], dim = 1)
+        else:
+            event.true_edges = event.modulewise_true_edges
+        
 
         return event
     
@@ -44,6 +47,7 @@ class DualEmbeddingDataset(Dataset):
 def find_neighbors(embedding1, embedding2, r_max=1.0, k_max=10):
     embedding1 = embedding1.reshape((1, embedding1.shape[0], embedding1.shape[1]))
     embedding2 = embedding2.reshape((1, embedding2.shape[0], embedding2.shape[1]))
+    
     _, idxs, _, _ = frnn.frnn_grid_points(points1 = embedding1,
                                           points2 = embedding2,
                                           lengths1 = None,
