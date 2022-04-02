@@ -44,7 +44,7 @@ class CosineLayerlessEmbedding(CosineEmbeddingBase):
             n_ln.append(Linear(hparams["emb_hidden"], hparams["emb_hidden"]))
             n_ln.append(nn.GELU())
         n_ln.append(Linear(hparams["emb_hidden"], hparams["emb_dim"]))
-        
+    
         n_spaces_layers = [nn.Sequential(*n_ln)
                            for _ in range (hparams["n_spaces"])]
         

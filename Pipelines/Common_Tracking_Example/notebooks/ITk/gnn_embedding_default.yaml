@@ -1,0 +1,35 @@
+# Input/output configuration
+input_dir: /global/cfs/cdirs/m3443/data/ITk-upgrade/processed/gnn_processed/0GeV_barrel_v3
+
+# Dataset parameters
+
+datatype_names: [train, val, test] # Which directory prefixes to use, assuming at least a train dataset 
+train_split: [1000, 10, 0] # Number of [training, validation, testing] examples
+true_edges: modulewise_true_edges
+ptcut: 1000.
+
+# Model parameters
+score_cut: 0.15
+max_eff: 0.98
+emb_dim: 16
+knn_r: 1.
+spatial_channels: 3
+cell_channels: 8
+hidden: 512
+n_graph_iters: 8
+nb_node_layer: 2
+nb_edge_layer: 3
+output_layers: 3
+hidden_output_activation: Tanh
+emb_channels: 0
+layernorm: True
+hidden_activation: GELU
+loss_function: pairwise_truth
+warmup: 500
+lr: 0.0001
+factor: 0.3
+patience: 10
+margin: 1
+regime: []
+embedding_regime: node
+max_epochs: 20

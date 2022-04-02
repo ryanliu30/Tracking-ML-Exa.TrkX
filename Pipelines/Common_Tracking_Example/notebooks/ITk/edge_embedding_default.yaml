@@ -2,16 +2,16 @@
 input_dir: /global/cfs/cdirs/m3443/usr/ryanliu/ITk_filter/filter_processed/test
 
 # Dataset parameters
-train_split: [200, 2, 0] # Number of [training, validation, testing] examples
+train_split: [500, 2, 0] # Number of [training, validation, testing] examples
 signal_pt_interval: 500.
 signal_pt_cut: 1000.
 weight_leak: 0.0
 merged_weight_ratio: 10
 weight_min: 0.2
 score_cut: 0.296
-n_nodes: 2000
+n_nodes: 5000
 edges_per_nodes: 20
-n_chunks: 5
+n_chunks: 10
 cheat: False
 cheating_doublet_per_node: 2
 
@@ -31,7 +31,7 @@ warmup: 200
 margin: 1.0
 lr: 0.0001
 factor: 0.3
-patience: 10
+patience: 5
 regime: [ci]
 max_epochs: 30
 max_steps: 10000

@@ -13,8 +13,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def build_neighbors_list(nodes, edges, device = "cuda"):
     
-    if torch.is_tensor(edges):
-        edges = edges.cpu().numpy()
+    edges = edges.cpu().numpy()
     
     # Build adjacency matrix in COO form
     neighbors_list = sparse.coo_matrix((np.ones(edges.shape[1]), edges),
