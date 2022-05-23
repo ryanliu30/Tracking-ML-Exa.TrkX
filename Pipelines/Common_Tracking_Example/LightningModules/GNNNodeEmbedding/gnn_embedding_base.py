@@ -21,11 +21,15 @@ import frnn
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Local imports
-from .utils import load_dataset_paths, EmbeddingDataset, graph_intersection
+from .utils import load_dataset_paths, EmbeddingDataset, graph_intersection, build_graph, efficiency_performance_wrt_distance
 
 class GNNEmbeddingBase(LightningModule):
     def __init__(self, hparams):
         super().__init__()
+        if hparams["use_toy"]:
+            hparams["regime"] = []
+            hparams["spatial_channels"] = 2
+
         """
         Initialise the Lightning Module that can scan over different filter training regimes
         """
@@ -42,21 +46,21 @@ class GNNEmbeddingBase(LightningModule):
     def train_dataloader(self):
         self.trainset = EmbeddingDataset(self.trainset, self.hparams, stage = "train", device = "cpu")
         if self.trainset is not None:
-            return DataLoader(self.trainset, batch_size=1, num_workers=4)
+            return DataLoader(self.trainset, batch_size=1, num_workers=16)
         else:
             return None
 
     def val_dataloader(self):
         self.valset = EmbeddingDataset(self.valset, self.hparams, stage = "val", device = "cpu")
         if self.valset is not None:
-            return DataLoader(self.valset, batch_size=1, num_workers=4)
+            return DataLoader(self.valset, batch_size=1, num_workers=16)
         else:
             return None
 
     def test_dataloader(self):
         self.testset = EmbeddingDataset(self.testset, self.hparams, stage = "test", device = "cpu")
         if self.testset is not None:
-            return DataLoader(self.testset, batch_size=1, num_workers=4)
+            return DataLoader(self.testset, batch_size=1, num_workers=16)
         else:
             return None
 
@@ -119,29 +123,43 @@ class GNNEmbeddingBase(LightningModule):
     
     def repulsive_potential(self, centers):
         
-        centers = centers.unsqueeze(0)
-        _, idxs, _, _ = frnn.frnn_grid_points(points1 = centers, points2 = centers, K = 100, r = self.hparams["knn_r"])
-        
-        idxs = idxs.squeeze()
-        centers = centers.squeeze()
-        positive_idxs = idxs >= 0
-        ind = torch.arange(len(centers), device = self.device).reshape((-1, 1)).expand((-1, 100))
-        edges = torch.stack([ind[positive_idxs],
-                            idxs[positive_idxs]
-                            ], dim = 0)
+        edges = build_graph(centers, self.hparams["knn"], self.hparams["knn_r"])
         
         potential = torch.acos((1 - 1e-4)*self.cos(centers[edges[0]], centers[edges[1]]))
         potential = (self.hparams["knn_r"] - potential).square().mean()
         
         return potential
-        
     
-    def get_dist(self, batch, embeddings):
+    def hard_negative_mining_loss(self, batch, embeddings):
         
-        dist = (embeddings[batch.graph[0]] - embeddings[batch.graph[1]]).square().sum(-1).sqrt()
-        y = batch.y.clone()
+        fake_embeddings = embeddings[batch.pid == 0]
+        signal_embeddings = embeddings[(batch.pid != 0) & (batch.pt > self.hparams["ptcut"])]
+        
+        if fake_embeddings.shape[0] == 0:
+            fake_embeddings = torch.zeros((1, self.hparams["emb_dim"]), device = self.device)
+        
+        mask = torch.arange(len(embeddings), device = self.device)[(batch.pid != 0) & (batch.pt > self.hparams["ptcut"])]
+        
+        hnm_edges = build_graph(signal_embeddings, self.hparams["knn"], self.hparams["knn_r"])
+        hnm_edges = mask[hnm_edges]
+        
+        e_bidir = torch.cat([batch.signal_true_edges, batch.signal_true_edges.flip(0)], dim = -1)
+        
+        hnm_edges, y = graph_intersection(hnm_edges, e_bidir)
+        hnm_edges = hnm_edges.to(self.device)
+        y = y.to(self.device)
 
-        return dist, y
+        fake_hnm_edges = hnm_edges[:, ((y == 0) & (batch.pid[hnm_edges[0]]!=batch.pid[hnm_edges[1]]))]
+        dists = [(embeddings[e_bidir[0]] - embeddings[e_bidir[1]]).square().sum(-1).mean(),
+                 fake_embeddings.square().sum(-1).mean(),
+                 (self.hparams["knn_r"] - ((embeddings[fake_hnm_edges[0]] - embeddings[fake_hnm_edges[1]]).square().sum(-1) + 1e-12).sqrt()).square().mean(),
+                 (1 - (signal_embeddings.square().sum(-1)+1e-12).sqrt()).square().mean()
+                ]
+        
+        loss = sum([weight*dist for weight, dist in zip(self.hparams["hnm_weights"], dists)])/sum(self.hparams["hnm_weights"])
+        
+        return loss
+    
     
     def training_step(self, batch, batch_idx):
         
@@ -149,20 +167,20 @@ class GNNEmbeddingBase(LightningModule):
         
         embeddings = self(input_data, batch.graph)
         
-        # fake_embeddings, true_embeddings, true_clusters = self.get_cluster(batch, embeddings)
-        # centers = self.get_centers(true_embeddings, true_clusters)
-        # dists = [*self.attractive_potential(true_embeddings, fake_embeddings, true_clusters, centers), self.repulsive_potential(centers)]
-        # loss = sum([weight*dist for weight, dist in zip(self.hparams["weights"], dists)])/sum(self.hparams["weights"])
+        if self.hparams["loss_function"] == "object_condensation":
         
-        embeddings = torch.sigmoid(embeddings.squeeze())
-        y = (batch.pid != 0)
-        embeddings = embeddings[(batch.pt > 1000) | (y == 0)]
-        y = y[(batch.pt > 1000) | (y == 0)]
-        loss = nn.functional.binary_cross_entropy_with_logits(embeddings.float(), y.float(), pos_weight = torch.tensor([5], device = self.device))
-                
-        self.log("train_loss", loss)
-
-        return loss
+            fake_embeddings, true_embeddings, true_clusters = self.get_cluster(batch, embeddings)
+            centers = self.get_centers(true_embeddings, true_clusters)
+            dists = [*self.attractive_potential(true_embeddings, fake_embeddings, true_clusters, centers), self.repulsive_potential(centers)]
+            loss = sum([weight*dist for weight, dist in zip(self.hparams["weights"], dists)])/sum(self.hparams["weights"])
+            
+        if self.hparams["loss_function"] == "hard_negative_mining":
+            
+            loss = self.hard_negative_mining_loss(batch, embeddings)
+        
+        self.log("embedding_loss", loss)
+            
+        return loss 
     
 
     def shared_evaluation(self, batch, batch_idx, log=False):
@@ -173,80 +191,85 @@ class GNNEmbeddingBase(LightningModule):
         
         input_data = self.get_input_data(batch)
         
-        embeddings = self(input_data, batch.graph)
+        embeddings= self(input_data, batch.graph)
             
-#         fake_embeddings, true_embeddings, true_clusters = self.get_cluster(batch, embeddings)
-#         centers = self.get_centers(true_embeddings, true_clusters)
-#         dists = [*self.attractive_potential(true_embeddings, fake_embeddings, true_clusters, centers), self.repulsive_potential(centers)]
-#         loss = sum([weight*dist for weight, dist in zip(self.hparams["weights"], dists)])/sum(self.hparams["weights"])
+        if self.hparams["loss_function"] == "object_condensation":
+            
+            fake_embeddings, true_embeddings, true_clusters = self.get_cluster(batch, embeddings)
+            centers = self.get_centers(true_embeddings, true_clusters)
+            dists = [*self.attractive_potential(true_embeddings, fake_embeddings, true_clusters, centers), self.repulsive_potential(centers)]
+            loss = sum([weight*dist for weight, dist in zip(self.hparams["weights"], dists)])/sum(self.hparams["weights"])
+            
+        if self.hparams["loss_function"] == "hard_negative_mining":
+            loss = self.hard_negative_mining_loss(batch, embeddings)
+            
+        # On top of old graph
+            
+        dist = (embeddings[batch.graph[0]] - embeddings[batch.graph[1]]).square().sum(-1).sqrt()
+        y = batch.y.clone()
         
-#         dist, y = self.get_dist(batch, embeddings)
+        truth_dist = (embeddings[batch.signal_true_edges[0]] - embeddings[batch.signal_true_edges[1]]).square().sum(-1).sqrt()
+        cut_dist = truth_dist.sort()[0][int(self.hparams["max_eff"]*len(truth_dist))].clone().detach().item()
         
-#         scores = (dist.max() - dist)/dist.max()
-#         auc = roc_auc_score(y.cpu().numpy(), scores.cpu().numpy())
-        
-#         true_dist = dist[y == 1]
-#         true_dist, _ = true_dist.sort()
-        
-#         cut_dist = true_dist[int(self.hparams["max_eff"]*len(true_dist))]
-        
-#         positives = (dist < cut_dist).sum()
-#         true_positives = (true_dist < cut_dist).sum()
+        positives = (dist[batch.scores >= self.hparams["score_cut"]] < cut_dist).sum()
+        true_positives = (dist[batch.scores >= self.hparams["score_cut"]] < cut_dist)[y[batch.scores >= self.hparams["score_cut"]] == 1].sum()
 
-#         true = batch.signal_true_edges.shape[1]
-#         original_pur = batch.y.sum()/len(batch.y)
+        true = batch.signal_true_edges.shape[1]
+        original_pur = batch.y[batch.scores >= self.hparams["score_cut"]].sum()/len(batch.y[batch.scores >= self.hparams["score_cut"]])
             
-#         eff = true_positives/true
-#         pur = true_positives/positives
-#         pur_boost = pur/original_pur
+        eff = true_positives/true
+        pur = true_positives/positives
+        pur_boost = pur/original_pur
         
-#         if log:
-#             current_lr = self.optimizers().param_groups[0]["lr"]
-            
-#             self.log_dict(
-#                 {
-#                     "val_loss": loss,
-#                     "dist@{}".format(self.hparams["max_eff"]): cut_dist,
-#                     "eff": eff,
-#                     "pur": pur,
-#                     "pur_boost": pur_boost,
-#                     "auc": auc,
-#                     "current_lr": current_lr,
-#                 }
-#             )
-#         return {
-#                 "val_loss": loss,
-#                 "dist@{}".format(self.hparams["max_eff"]): cut_dist,
-#                 "eff": eff,
-#                 "pur": pur,
-#                 "pur_boost": pur_boost,
-#                 "auc": auc,
-#                 "current_lr": current_lr
-#                }
-        embeddings = torch.sigmoid(embeddings.squeeze())
-        y = (batch.pid != 0)
-        pur = (embeddings[(batch.pt > 1000) & (batch.nhits > 3) & (batch.primary == 1)] > 0.3).sum()/((batch.pt > 1000) & (batch.nhits > 3) & (batch.primary == 1)).sum()
-        eff = (embeddings[(batch.pt > 1000) & (batch.nhits > 3) & (batch.primary == 1)] > 0.3).sum()/(batch.pt > 1000).sum()
-        embeddings = embeddings[(batch.pt > 1000) | (y == 0)]
-        y = y[(batch.pt > 1000) | (y == 0)]
-        loss = nn.functional.binary_cross_entropy_with_logits(embeddings.float(), y.float(), pos_weight = torch.tensor([5], device = self.device))
-        auc = roc_auc_score(y.cpu().numpy(), embeddings.cpu().numpy())
+        # Construct New Graph
+        
+        new_graph = build_graph(embeddings, 1000, cut_dist)
+                        
+        e_bidir = torch.cat([batch.signal_true_edges, batch.signal_true_edges.flip(0)], dim = -1)
+        new_graph, y = graph_intersection(new_graph, e_bidir)
+        new_pur = y.sum()/new_graph.shape[1]
+        new_eff = y.sum()/e_bidir.shape[1]
+        
+        pid_eff = (batch.pid[new_graph[0]] == batch.pid[new_graph[1]]).sum()/(batch.pid.unique(return_counts = True)[1]*(batch.pid.unique(return_counts = True)[1]-1)).sum()
+        pid_pur = (batch.pid[new_graph[0]] == batch.pid[new_graph[1]]).sum()/new_graph.shape[1]
+        
+        n_hop_eff_list, n_hop_pur_list = efficiency_performance_wrt_distance(batch.graph, new_graph, batch.signal_true_edges, 5)
+        
+        n_hop_eff = {"{}_hop_eff".format(i+1): n_hop_eff_list[i] for i in range(len(n_hop_eff_list))}
+        n_hop_pur = {"{}_hop_pur".format(i+1): n_hop_pur_list[i] for i in range(len(n_hop_pur_list))}
+        
         if log:
+            
             current_lr = self.optimizers().param_groups[0]["lr"]
             
             self.log_dict(
                 {
-                    "eff":eff,
-                    "pur":pur,
                     "val_loss": loss,
-                    "auc": auc,
+                    "eff": eff,
+                    "pur": pur,
+                    "pid_eff":pid_eff,
+                    "pid_pur":pid_pur,
+                    "new_eff": new_eff,
+                    "new_pur": new_pur,
+                    "pur_boost": pur_boost,
+                    "current_lr": current_lr,
+                    **n_hop_eff,
+                    **n_hop_pur
+                    
                 }
             )
         return {
-                "eff":eff,
-                "pur":pur,
                 "val_loss": loss,
-                "auc": auc,
+                "eff": eff,
+                "pur": pur,
+                "pid_eff":pid_eff,
+                "pid_pur":pid_pur,
+                "new_eff": new_eff,
+                "new_pur": new_pur,
+                "pur_boost": pur_boost,
+                "current_lr": current_lr,
+                **n_hop_eff,
+                **n_hop_pur
                }
 
     def validation_step(self, batch, batch_idx):

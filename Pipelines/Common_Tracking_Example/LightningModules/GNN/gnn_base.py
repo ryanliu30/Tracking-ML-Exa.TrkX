@@ -143,7 +143,7 @@ class GNNBase(LightningModule):
 
         truth = truth_sample.float() if "pid" in self.hparams["regime"] else batch.y
         
-        loss = F.binary_cross_entropy_with_logits(
+        loss = F.binary_cross_entropy(
             output, truth.float(), weight=manual_weights, pos_weight=weight
         )
 

@@ -1,3 +1,2 @@
-regime: {"values": [[ci], []]}
 embedding_regime: {"values": [node, edge]}
 loss_function: {"values": [pairwise_truth, object_condensation]}

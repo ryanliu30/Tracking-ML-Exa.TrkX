@@ -35,13 +35,11 @@ class EmbeddingDataset(Dataset):
         
         event = torch.load(self.dirs[key], map_location=torch.device(self.device))
         
-        mask = (event.scores > self.hparams["score_cut"]) | (torch.rand(event.scores.shape, device = self.device) < self.hparams["random_edges"])
-        
-        event.graph = event.edge_index[:, mask]
-        event.y = event.y.bool()[mask]
-        event.y_pid = event.y_pid.bool()[mask]
-        event.pid_signal = event.pid_signal.bool()[mask]
-        event.scores = event.scores[mask]
+        event.graph = event.edge_index
+        event.y = event.y.bool()
+        event.y_pid = event.y_pid.bool()
+        event.pid_signal = event.pid_signal.bool()
+        event.scores = event.scores
         
         if self.hparams["primary"]:
             event.pid[(event.nhits < 3) | (event.primary != 1)] = 0
@@ -64,12 +62,7 @@ class EmbeddingDataset(Dataset):
                 
             for i in ["x", "cell_data", "pid", "hid", "pt", "primary", "nhits"]:
                 event[i] = event[i][pid_mask]
-        
-        if self.hparams["embedding_regime"] == "edge":
-            event.triplet_graph, event.triplet_y, event.triplet_y_pid = build_triplets(event, event.graph, self.device)
-            
-            event.signal_triplet_true_graph, _, _ = build_triplets(event, event.signal_true_edges, self.device)
-        
+                
         return event
     
     def __len__(self):
@@ -125,6 +118,63 @@ def graph_intersection(
     else:
         return new_pred_graph, y
     
+def efficiency_performance_wrt_distance(gnn_graph, pred_graph, truth_graph, n_hop):
+    
+    array_size = max(gnn_graph.max().item(), pred_graph.max().item(), truth_graph.max().item()) + 1
+
+    if torch.is_tensor(pred_graph):
+        l1 = pred_graph.cpu().numpy()
+    else:
+        l1 = pred_graph
+    if torch.is_tensor(truth_graph):
+        l2 = truth_graph.cpu().numpy()
+    else:
+        l2 = truth_graph
+    if torch.is_tensor(gnn_graph):
+        l3 = gnn_graph.cpu().numpy()
+    else:
+        l3 = gnn_graph
+        
+    e_pred = sp.sparse.coo_matrix(
+        (np.ones(l1.shape[1]), l1), shape=(array_size, array_size)
+    ).tocsr()
+    e_truth = sp.sparse.coo_matrix(
+        (np.ones(l2.shape[1]), l2), shape=(array_size, array_size)
+    ).tocsr()
+    e_gnn = sp.sparse.coo_matrix(
+        (np.ones(l3.shape[1]), l3), shape=(array_size, array_size)
+    ).tocsr()
+    
+    # symmetrization:
+    e_pred = (e_pred + e_pred.T) > 0
+    e_truth = (e_truth + e_truth.T) > 0
+    e_gnn = (e_gnn + e_gnn.T) > 0
+    
+    # find n hop neighbors
+    
+    n_hop_neighbors = []
+    
+    for i in range(n_hop):
+        power = e_gnn
+        for j in range(i):
+            power = power * e_gnn
+        n_hop_neighbors.append(power > 0)
+        del power
+    
+    for i in range(n_hop-1, -1, -1):
+        for j in range(i-1, -1, -1):
+            n_hop_neighbors[i] = n_hop_neighbors[i] - n_hop_neighbors[j]
+        n_hop_neighbors[i] = n_hop_neighbors[i] > 0
+    
+    n_hop_eff = []
+    
+    for i in range(n_hop):
+        signal_num = e_truth.multiply(n_hop_neighbors[i]).sum()
+        found_num = e_truth.multiply(e_pred.multiply(n_hop_neighbors[i])).sum()
+        n_hop_eff.append("eff:{:.3f} with {}/{}".format(found_num/(signal_num + 1e-12), found_num, signal_num))
+        
+    return n_hop_eff
+    
 def make_mlp(
     input_size,
     hidden_size,
@@ -154,35 +204,26 @@ def make_mlp(
         layers.append(output_activation())
     return nn.Sequential(*layers)
 
+def find_neighbors(embedding1, embedding2, r_max=1.0, k_max=10):
+    embedding1 = embedding1.reshape((1, embedding1.shape[0], embedding1.shape[1]))
+    embedding2 = embedding2.reshape((1, embedding2.shape[0], embedding2.shape[1]))
+    
+    _, idxs, _, _ = frnn.frnn_grid_points(points1 = embedding1,
+                                          points2 = embedding2,
+                                          lengths1 = None,
+                                          lengths2 = None,
+                                          K = k_max,
+                                          r = r_max,
+                                         )
+    return idxs.squeeze(0)
 
-def build_triplets(batch, graph, device):
+def build_graph(embeddings, k, r):
     
-    undir_graph = torch.cat([graph, graph.flip(0)], dim=-1)
-    e_max = undir_graph.max().item()
-    
-    # convert to cupy
-    undir_graph = undir_graph.cpu().numpy().astype(np.float32)
-    
-    # make some utility objects
-    num_edges = undir_graph.shape[1]
-    e_ones = np.ones(num_edges, dtype = np.float32)
-    e_arange = np.arange(num_edges, dtype = np.float32)
-    
-    # build sparse edge array
-    passing_edges_csr_in = sparse.coo_matrix((e_ones, (undir_graph[0], e_arange)), shape=(e_max+1, num_edges)).tocsr()
-    passing_edges_csr_out = sparse.coo_matrix((e_ones, (undir_graph[1], e_arange)), shape=(e_max+1, num_edges)).tocsr()
-    
-    # convert to triplets
-    triplet_edges = passing_edges_csr_out.T * passing_edges_csr_in
-    triplet_edges = triplet_edges.tocoo()
-    
-    # convert back to pytorch
-    undirected_triplet_edges = torch.as_tensor(np.stack([triplet_edges.row, triplet_edges.col]), device=device)
-    
-    # convert back to a single-direction edge list
-    directed_map = torch.cat([torch.arange(num_edges/2, device=device), torch.arange(num_edges/2, device=device)]).int()
-    directed_triplet_edges = directed_map[undirected_triplet_edges.long()].long()
-    directed_triplet_edges = directed_triplet_edges[:, directed_triplet_edges[0] != directed_triplet_edges[1]] # Remove self-loops
-    directed_triplet_edges = directed_triplet_edges[:, directed_triplet_edges[0] < directed_triplet_edges[1]] # Remove duplicate edges
+    idxs = find_neighbors(embeddings.clone().detach(), embeddings.clone().detach(), r_max=r, k_max=k)
 
-    return directed_triplet_edges, batch.y[directed_triplet_edges].all(0), batch.y_pid[directed_triplet_edges].all(0)
+    positive_idxs = idxs >= 0
+    ind = torch.arange(idxs.shape[0], device = positive_idxs.device).unsqueeze(1).expand(idxs.shape)
+    edges = torch.stack([ind[positive_idxs],
+                        idxs[positive_idxs]
+                        ], dim = 0)     
+    return edges

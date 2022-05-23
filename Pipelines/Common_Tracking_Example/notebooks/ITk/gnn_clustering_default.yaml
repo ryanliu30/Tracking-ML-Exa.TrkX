@@ -4,52 +4,46 @@ input_dir: /global/cfs/cdirs/m3443/data/ITk-upgrade/processed/gnn_processed/0GeV
 # Dataset parameters
 
 datatype_names: [train, val, test] # Which directory prefixes to use, assuming at least a train dataset 
-train_split: [1000, 5, 0] # Number of [training, validation, testing] examples
+train_split: [1000, 20, 0] # Number of [training, validation, testing] examples
 true_edges: modulewise_true_edges
 score_cut: 0.15
-random_edges: 0.1
 ptcut: 1000.
 n_hits: 3
 primary: True
-cheat: True
+weight_leak: 0.00
+weight_min: 0.
+pt_interval: 500.
+checkpointing: False
 
 # Model parameters
-max_eff: 0.98
-emb_dim: 16
-knn_r: 1
-knn: 100
-dist_cut: 0.2
-global_information: False
 spatial_channels: 3
 cell_channels: 8
 latent: 128
-hidden: 128
-n_graph_iters: 8
+hidden: 256
+clusters: 1200
+n_interaction_graph_iters: 4
+n_hierarchical_graph_iters: 6
 nb_node_layer: 3
 nb_edge_layer: 3
-output_layers: 5
 hidden_output_activation: Tanh
 layernorm: True
-residual: True
 hidden_activation: GELU
 warmup: 500
 lr: 0.001
-factor: 0.985
+factor: 0.99
 share_weight: False
 patience: 1
 regime: []
-weights: [1.,1.,1.] #true attractive, false attractive, true repulsive
-hnm_weights: [1.,0.,1.,0.] #true attractive, fake attractive, true repulsive, true_repulsive_shpere
-embedding_regime: node
-loss_function: hard_negative_mining
-max_epochs: 100
-
+max_epochs: 1000
+majority_cut: 0.5
+initialization_method: nn
+att_on_supergraph: True
 # Toy Model
 use_toy: True
 num_tracks: 100
 num_layers: 10
-min_r: 0.5
+min_r: 1
 max_r: 5
 detector_width: 2
-toy_eff: 1.0
-toy_pur: 0.
+toy_eff: 0.95
+toy_pur: 0.5

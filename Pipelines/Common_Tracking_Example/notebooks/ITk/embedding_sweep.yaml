@@ -1,0 +1,4 @@
+# toy_eff: {"values": [0.95, 0.9, 0.85, 0.8]}
+# toy_pur: {"values": [0.5, 0.4, 0.3, 0.2, 0.1]}
+model: {"values": [sparsehierarchical, interaction]}
+# log_weight_ratio: {"values": [0, 0.5, -0.5, 1., -1.]}

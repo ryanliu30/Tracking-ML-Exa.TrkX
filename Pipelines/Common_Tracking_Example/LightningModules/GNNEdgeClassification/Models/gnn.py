@@ -10,17 +10,13 @@ import torch
 from torch_scatter import scatter_add
 from torch.utils.checkpoint import checkpoint
 
-from ..gnn_embedding_base import GNNEmbeddingBase
+from ..gnn_base import GNNBase
 from ..utils import make_mlp
 
 class InteractionGNNBlock(nn.Module):
     def __init__(self, hparams):
         super().__init__()
-        
-        if hparams["use_toy"]:
-            hparams["regime"] = []
-            hparams["spatial_channels"] = 2
-            
+
         global_size = 0
         if hparams["global_information"]:
             global_size = hparams["hidden"]
@@ -94,16 +90,13 @@ class InteractionGNNBlock(nn.Module):
         
         return nodes, edges
 
-class InteractionGNN(GNNEmbeddingBase):
+class InteractionGNN(GNNBase):
 
     """
     An interaction network class
     """
 
     def __init__(self, hparams):
-        if hparams["use_toy"]:
-            hparams["regime"] = []
-            hparams["spatial_channels"] = 2
         super().__init__(hparams)
         """
         Initialise the Lightning Module that can scan over different GNN training regimes
@@ -152,9 +145,9 @@ class InteractionGNN(GNNEmbeddingBase):
         
         # output layers
         self.output_layer = make_mlp(
-            hparams["latent"],
+            4 * hparams["latent"],
             hparams["hidden"],
-            hparams["emb_dim"],
+            1,
             hparams["output_layers"],
             layer_norm=hparams["layernorm"],
             output_activation=None,
@@ -173,9 +166,9 @@ class InteractionGNN(GNNEmbeddingBase):
         for layer in self.gnn_blocks:
             nodes, edges = layer(nodes, edges, directed_graph)
             
-        embeddings = self.output_layer(nodes)
+        scores = self.output_layer(torch.cat([nodes[graph[0]], nodes[graph[1]], edges[:graph.shape[1]], edges[graph.shape[1]:]], dim = 1))
         
-        return nn.functional.normalize(embeddings, p=2.0, dim=1, eps=1e-12)
+        return torch.sigmoid(scores.squeeze())
 
 
 
