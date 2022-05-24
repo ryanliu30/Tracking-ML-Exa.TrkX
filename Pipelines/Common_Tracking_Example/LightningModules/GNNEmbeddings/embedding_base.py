@@ -46,7 +46,7 @@ class EmbeddingBase(LightningModule):
     def train_dataloader(self):
         self.trainset = EmbeddingDataset(self.trainset, self.hparams, stage = "train", device = "cpu")
         if self.trainset is not None:
-            return DataLoader(self.trainset, batch_size=1, num_workers=4)
+            return DataLoader(self.trainset, batch_size=1, num_workers=4, shuffle = True)
         else:
             return None
 

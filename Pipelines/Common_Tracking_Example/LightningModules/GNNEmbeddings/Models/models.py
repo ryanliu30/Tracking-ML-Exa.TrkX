@@ -10,28 +10,13 @@ import torch
 from torch_scatter import scatter_add, scatter_mean, scatter_max, scatter_min 
 from torch.utils.checkpoint import checkpoint
 from cugraph.structure.symmetrize import symmetrize
-from cuml.cluster import HDBSCAN, DBSCAN
+from cuml.cluster import HDBSCAN, DBSCAN, KMeans
 import cudf
 import cupy as cp
 
 from ..embedding_base import EmbeddingBase
 from ..utils import make_mlp, find_neighbors
 
-import signal
-from contextlib import contextmanager
-
-class TimeoutException(Exception): pass
-
-@contextmanager
-def time_limit(seconds):
-    def signal_handler(signum, frame):
-        raise TimeoutException("Timed out!")
-    signal.signal(signal.SIGALRM, signal_handler)
-    signal.alarm(seconds)
-    try:
-        yield
-    finally:
-        signal.alarm(0)
 
 class MLPEmbedding(EmbeddingBase):
     def __init__(self, hparams):
@@ -516,28 +501,27 @@ class SparseHierarchicalGNNAttention(nn.Module):
         
     def get_clusters(self, nodes):
         
-        self.device = nodes.device
-        
-        # Compute Clusters
+        # Compute Embeddings
         embeddings = self.clustering_network(nodes)
-        # embeddings  = nn.functional.normalize(embeddings)
-        
+        embeddings = nn.functional.normalize(embeddings) + torch.normal(0, 2e-3, embeddings.shape, device = embeddings.device)
+       
         # Clustering
-        clustering_input = cudf.DataFrame(embeddings.clone().detach())
-        # clusters = self.HDBSCANmodel.fit_predict(HDBSCAN_input)
+        clustering_input = cudf.DataFrame(embeddings)
+        
         if self.hparams["clustering_model"] == "DBSCAN":
             model = DBSCAN(min_samples = self.hparams["min_samples"], eps = self.hparams["DBSCAN_eps"]) 
         if self.hparams["clustering_model"] == "HDBSCAN":
             model = HDBSCAN(min_cluster_size = self.hparams["min_cluster_size"])
-        try:
-            with time_limit(1):
-                clusters = model.fit_predict(clustering_input)
-        except TimeoutException as e:
-            print("time out!")
-            clusters = torch.ones(len(embeddings))
+        if self.hparams["clustering_model"] == "KMEANS":
+            model = KMeans(n_clusters=self.hparams["kmeans"])
         
+        clusters = model.fit_predict(clustering_input)
+
         del model
-        clusters = torch.as_tensor(clusters, device = self.device).long()
+        
+        clusters = torch.as_tensor(clusters, device = nodes.device).long()
+        if (clusters >= 0).any():
+            clusters[clusters >= 0] = clusters[clusters >= 0].unique(return_inverse = True)[1]
         if (clusters < 0).all():
             clusters = clusters + 1
         
@@ -549,7 +533,7 @@ class SparseHierarchicalGNNAttention(nn.Module):
         self.device = nodes.device
         
         embeddings = self.clustering_network(nodes)
-        # embeddings  = nn.functional.normalize(embeddings)
+        embeddings  = nn.functional.normalize(embeddings)
     
         self.log("clusters", float(clusters.max().item()+1))
 
@@ -565,11 +549,10 @@ class SparseHierarchicalGNNAttention(nn.Module):
                                        bipartite_idxs[positive_idxs]], dim = 0)
         
         # Compute bipartite attention
-        # attention = torch.einsum('ij,ij->i', embeddings[bipartite_graph[0]], means[bipartite_graph[1]]) 
-        attention = -(embeddings[bipartite_graph[0]] - means[bipartite_graph[1]]).square().sum(-1)
-        att_max = scatter_max(attention, bipartite_graph[0], dim=0, dim_size = nodes.shape[0])[0][bipartite_graph[0]]
+        attention = torch.einsum('ij,ij->i', embeddings[bipartite_graph[0]], means[bipartite_graph[1]]) 
+        # att_max = scatter_max(attention, bipartite_graph[0], dim=0, dim_size = nodes.shape[0])[0][bipartite_graph[0]]
         att_min = scatter_min(attention, bipartite_graph[0], dim=0, dim_size = nodes.shape[0])[0][bipartite_graph[0]]
-        attention = 2*(attention - att_min)/(1e-4 + (att_max - att_min).detach())
+        attention = 2*(attention - att_min)/(1e-4 + (1 - att_min).detach())
         attention = torch.exp(attention)
         bipartite_graph_attention = attention/(1e-4 + scatter_add(attention, bipartite_graph[0], dim=0, dim_size = nodes.shape[0])[bipartite_graph[0]])
         bipartite_graph_attention = bipartite_graph_attention.unsqueeze(1)
@@ -582,11 +565,10 @@ class SparseHierarchicalGNNAttention(nn.Module):
         super_graph = torch.tensor(cp.vstack([src.to_cupy(), dst.to_cupy()]), device=self.device).long()
         
         # Supergraph Attention
-        # attention = torch.einsum("ij, ij -> i", means[super_graph[0]], means[super_graph[1]])
-        attention = -(means[super_graph[0]] - means[super_graph[1]]).square().sum(-1)
-        att_max = scatter_max(attention, super_graph[1], dim=0, dim_size = means.shape[0])[0][super_graph[1]]
+        attention = torch.einsum("ij, ij -> i", means[super_graph[0]], means[super_graph[1]])
+        # att_max = scatter_max(attention, super_graph[1], dim=0, dim_size = means.shape[0])[0][super_graph[1]]
         att_min = scatter_min(attention, super_graph[1], dim=0, dim_size = means.shape[0])[0][super_graph[1]]
-        attention = 2*(attention - att_min)/(1e-4 + (att_max - att_min).detach())
+        attention = 2*(attention - att_min)/(1e-4 + (1 - att_min).detach())
         attention = torch.tanh(attention)
         super_graph_attention = attention.unsqueeze(1)
         
@@ -683,21 +665,28 @@ class SparseHierarchicalGNN(EmbeddingBase):
         )
         
         self.softmax = nn.Softmax(dim = -1)
-        
-    def forward(self, x, graph):
-        
-        x.requires_grad = True
-        
-        directed_graph = torch.cat([graph, graph.flip(0)], dim = 1)
+
+    def get_clusters(self, x, graph):
         
         with torch.no_grad():
+
+            directed_graph = torch.cat([graph, graph.flip(0)], dim = 1)
             nodes = self.node_encoder(x)
             edges = self.edge_encoder(torch.cat([x[directed_graph[0]], x[directed_graph[1]]], dim=1))
             for layer in self.ignn_blocks:
                 nodes, edges= layer(nodes, edges, directed_graph)
             del edges
             clusters = self.supergraph_construction.get_clusters(nodes)
-            
+        
+        return clusters
+        
+    def forward(self, x, graph):
+        
+        clusters = self.get_clusters(x, graph)
+        
+        x.requires_grad = True
+        
+        directed_graph = torch.cat([graph, graph.flip(0)], dim = 1)            
         
         nodes = checkpoint(self.node_encoder, x)
         edges = checkpoint(self.edge_encoder, torch.cat([x[directed_graph[0]], x[directed_graph[1]]], dim=1))

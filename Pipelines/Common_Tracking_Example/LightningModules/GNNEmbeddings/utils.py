@@ -48,7 +48,8 @@ def load_dataset_paths(input_dir, datatype_names):
         events = os.listdir(os.path.join(input_dir, name))
         events = sorted([os.path.join(input_dir, name, event) for event in events])
         all_events.extend(events)
-    # random.shuffle(all_events)
+    random.seed(42)
+    random.shuffle(all_events)
     return all_events
 
 class EmbeddingDataset(Dataset):
