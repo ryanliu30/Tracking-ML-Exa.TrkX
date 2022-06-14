@@ -46,21 +46,21 @@ class EmbeddingBase(LightningModule):
     def train_dataloader(self):
         self.trainset = EmbeddingDataset(self.trainset, self.hparams, stage = "train", device = "cpu")
         if self.trainset is not None:
-            return DataLoader(self.trainset, batch_size=1, num_workers=4, shuffle = True)
+            return DataLoader(self.trainset, batch_size=1, num_workers=16, shuffle = True)
         else:
             return None
 
     def val_dataloader(self):
         self.valset = EmbeddingDataset(self.valset, self.hparams, stage = "val", device = "cpu")
         if self.valset is not None:
-            return DataLoader(self.valset, batch_size=1, num_workers=4)
+            return DataLoader(self.valset, batch_size=1, num_workers=16)
         else:
             return None
 
     def test_dataloader(self):
         self.testset = EmbeddingDataset(self.testset, self.hparams, stage = "test", device = "cpu")
         if self.testset is not None:
-            return DataLoader(self.testset, batch_size=1, num_workers=4)
+            return DataLoader(self.testset, batch_size=1, num_workers=16)
         else:
             return None
 
@@ -219,16 +219,22 @@ class EmbeddingBase(LightningModule):
         clusters = self.HDBSCANmodel.fit_predict(embeddings)
         labels = torch.tensor(clusters + 1).long().to(self.device)
         labels = nn.functional.one_hot(labels, num_classes=labels.max()+1).float()
+        labels = labels[:, 1:]
         pid_cluster_counts = scatter_add(labels, pid, dim = 0, dim_size = pid.max()+1)
         original_assignments = labels + 0.01*torch.rand(labels.shape, device = self.device)
         bipartite_matrix = csr_matrix(scatter_add(original_assignments, pid, dim = 0, dim_size = pid.max()+1).cpu().numpy())
         row_match, col_match = min_weight_full_bipartite_matching(bipartite_matrix, maximize=True)
+        row_match, col_match = torch.tensor(row_match, device = self.device).long(), torch.tensor(col_match, device = self.device).long()
         
         majority_mask = (pid_cluster_counts[row_match, col_match]/pid_cluster_counts[:, col_match].sum(0) > self.hparams["majority_cut"])
         pt_mask = (pt[row_match] > self.hparams["ptcut"])
         
         track_eff = (majority_mask & pt_mask).sum()/(pt > self.hparams["ptcut"]).sum()
         track_pur = (pid_cluster_counts[row_match, col_match]/pid_cluster_counts[:, col_match].sum(0))[majority_mask].mean()
+        
+        fake_rate = 1 - (majority_mask & pt_mask).sum()/(labels.shape[1] - (majority_mask & (pt[row_match] > 0) & (~pt_mask)).sum())
+        particle_eff = pid_cluster_counts[row_match, col_match][majority_mask & pt_mask].sum()/((batch.pt > self.hparams["ptcut"]) & (batch.pid != 0)).sum()
+        
         
         if log:
             
@@ -238,10 +244,12 @@ class EmbeddingBase(LightningModule):
                 {
                     "pur": pur,
                     "eff": eff,
+                    "particle_eff": particle_eff,
                     "pid_pur": pid_pur,
                     "pid_eff": pid_eff,
                     "track_eff": track_eff,
                     "track_pur": track_pur,
+                    "fake_rate": fake_rate,
                     "val_loss": loss,
                     "current_lr": current_lr
                 }
@@ -249,10 +257,12 @@ class EmbeddingBase(LightningModule):
         return {
                     "pur": pur,
                     "eff": eff,
+                    "particle_eff": particle_eff,
                     "pid_pur": pid_pur,
                     "pid_eff": pid_eff,
                     "track_eff": track_eff,
                     "track_pur": track_pur,
+                    "fake_rate": fake_rate,
                     "val_loss": loss,
                }
 

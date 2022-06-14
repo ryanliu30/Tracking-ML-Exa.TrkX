@@ -1,22 +1,23 @@
 # Input/output configuration
-input_dir: /global/cfs/cdirs/m3443/data/ITk-upgrade/processed/gnn_processed/0GeV_barrel_v3
+input_dir: /global/cfs/cdirs/m3443/data/ITk-upgrade/processed/gnn_processed/0GeV_v3
 
 # Dataset parameters
 datatype_names: [train, val, test] # Which directory prefixes to use, assuming at least a train dataset 
-train_split: [1000, 20, 0] # Number of [training, validation, testing] examples
+train_split: [1000, 50, 0] # Number of [training, validation, testing] examples
 true_edges: modulewise_true_edges
 score_cut: 0.15
 ptcut: 1000.
 n_hits: 3
 primary: True
 weight_leak: 0.001
-weight_min: 0.2
+weight_min: 0.1
 pt_interval: 500.
 checkpointing: True
-model: 4 #hierarchical
+model: interaction #sparsehierarchical
 use_pretrain: False
 noise: True
 hard_ptcut: False
+cut_edges: True
 
 # Model parameters
 max_eff: 0.98
@@ -26,8 +27,8 @@ latent: 128
 hidden: 256
 mlp_hidden: 1024
 emb_dim: 16
-n_interaction_graph_iters: 10
-n_preinteraction_graph_iters: 4
+n_interaction_graph_iters: 12
+n_preinteraction_graph_iters: 6
 n_hierarchical_graph_iters: 6
 nb_node_layer: 3
 nb_edge_layer: 3
@@ -41,17 +42,17 @@ hidden_activation: GELU
 warmup: 500
 lr: 0.001
 mlp_lr: 0.00005
-factor: 0.99
+factor: 0.98
 share_weight: False
 patience: 1
 regime: []
-max_epochs: 50
+max_epochs: 40
 majority_cut: 0.5
 log_weight_ratio: 0
-bipartitegraph_sparsity: 5
-supergraph_sparsity: 20
+bipartitegraph_sparsity: 10
+supergraph_sparsity: 50
 min_cluster_size: 3
-min_samples: 5
+min_samples: 3
 DBSCAN_eps: 100
 kmeans: 3000
 clustering_model: HDBSCAN
@@ -59,11 +60,11 @@ clustering_model: HDBSCAN
 
 # Toy Model
 use_toy: False
-num_tracks: 500
+num_tracks: 200
 track_dis_width: 10
-num_layers: 10
+num_layers: 30
 min_r: 1
 max_r: 5
 detector_width: 2
-toy_eff: 0.9
-toy_pur: 0.2
+toy_eff: 0.8
+toy_pur: 0.5

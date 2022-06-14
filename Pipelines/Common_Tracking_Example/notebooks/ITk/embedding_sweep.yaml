@@ -1,4 +1,6 @@
-# toy_eff: {"values": [0.95, 0.9, 0.85, 0.8]}
-# toy_pur: {"values": [0.5, 0.4, 0.3, 0.2, 0.1]}
-model: {"values": [sparsehierarchical, interaction]}
+# toy_pur: {"values": [0.5, 0.3]}
+# toy_eff: {"values": [0.9, 0.8, 0.7]}
+# num_tracks: {"values": [100, 200, 500, 800]}
+num_layers: {"values": [20, 30]}
+model: {"values": [interaction, sparsehierarchical]} 
 # log_weight_ratio: {"values": [0, 0.5, -0.5, 1., -1.]}

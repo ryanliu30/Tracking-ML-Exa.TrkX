@@ -1,0 +1,72 @@
+# Input/output configuration
+input_dir: /global/cfs/cdirs/m3443/data/ITk-upgrade/processed/gnn_processed/0GeV_barrel_v3
+
+# Dataset parameters
+datatype_names: [train, val, test] # Which directory prefixes to use, assuming at least a train dataset 
+train_split: [1000, 50, 100] # Number of [training, validation, testing] examples
+true_edges: modulewise_true_edges
+score_cut: 0.15
+ptcut: 1000.
+n_hits: 3
+primary: True
+weight_leak: 0.0005
+weight_min: 0.1
+pt_interval: 500.
+checkpointing: True
+use_pretrain: False
+noise: True
+hard_ptcut: False
+cut_edges: True
+noise_cut: 0.8
+
+# Model parameters
+spatial_channels: 3
+cell_channels: 8
+latent: 128
+hidden: 256
+emb_dim: 16
+n_interaction_graph_iters: 8
+n_interaction_embedding_graph_iters: 8
+n_interaction_encoding_graph_iters: 6
+n_hierarchical_graph_iters: 6
+nb_node_layer: 3
+nb_edge_layer: 3
+output_layers: 5
+nb_mlp_layer: 8
+knn: 100
+train_r: 1.0
+hidden_output_activation: Tanh
+layernorm: True
+hidden_activation: GELU
+warmup: 500
+lr: 0.001
+factor: 0.98
+share_weight: False
+patience: 1
+regime: []
+max_epochs: 100
+majority_cut: 0.5
+log_weight_ratio: 0
+bipartitegraph_sparsity: 5
+supergraph_sparsity: 20
+min_cluster_size: 3
+min_samples: 3
+DBSCAN_eps: 100
+kmeans: 3000
+clustering_model: HDBSCAN
+assignmnet_loss_weight: 0.25
+regression_loss_weight: 0.02
+use_one_loss: False
+update_nodes: False
+
+
+# Toy Model
+use_toy: False
+num_tracks: 200
+track_dis_width: 10
+num_layers: 20
+min_r: 1
+max_r: 5
+detector_width: 2
+toy_eff: 0.9
+toy_pur: 0.5

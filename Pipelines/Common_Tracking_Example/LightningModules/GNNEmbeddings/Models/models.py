@@ -447,22 +447,18 @@ class SparseHierarchicalGNNBlock(nn.Module):
         # Compute new supernode features
         node_messages = scatter_add(nodes[bipartite_graph[0]]*bipartite_graph_attention, bipartite_graph[1], dim=0, dim_size=bipartite_graph[1].max()+1)
         attention_messages = scatter_add(superedges[super_graph[0]]*super_graph_attention, super_graph[1], dim=0, dim_size=supernodes.shape[0])
-        supernode_inputs = torch.cat([supernodes, attention_messages, node_messages], dim=-1)
-        supernodes = checkpoint(self.supernode_network, supernode_inputs) + supernodes
+        supernodes = checkpoint(self.supernode_network, torch.cat([supernodes, attention_messages, node_messages], dim=-1)) + supernodes
         
-        # Compute new superedge features
-        superedge_input = torch.cat([supernodes[super_graph[0]], supernodes[super_graph[1]], superedges], dim=-1)
-        superedges = checkpoint(self.superedge_network, superedge_input) + superedges
-        
-        # Compute Interaction Network Updates
+        # Compute original graph updates
         supernode_messages = scatter_add(supernodes[bipartite_graph[1]]*bipartite_graph_attention, bipartite_graph[0], dim=0, dim_size=nodes.shape[0])
         edge_messages = scatter_add(edges, graph[1], dim=0, dim_size=nodes.shape[0])
-        node_inputs = torch.cat([nodes, edge_messages, supernode_messages], dim=-1) 
-        nodes = checkpoint(self.node_network, node_inputs) + nodes
+        nodes = checkpoint(self.node_network, torch.cat([nodes, edge_messages, supernode_messages], dim=-1)) + nodes
+        
+        # Compute new superedge features
+        superedges = checkpoint(self.superedge_network, torch.cat([supernodes[super_graph[0]], supernodes[super_graph[1]], superedges], dim=-1)) + superedges
         
         # Compute new edge features
-        edge_input = torch.cat([nodes[graph[0]], nodes[graph[1]], edges], dim=-1)
-        edges = checkpoint(self.edge_network, edge_input) + edges
+        edges = checkpoint(self.edge_network, torch.cat([nodes[graph[0]], nodes[graph[1]], edges], dim=-1)) + edges
         
         return nodes, edges, supernodes, superedges
     
@@ -484,6 +480,26 @@ class SparseHierarchicalGNNAttention(nn.Module):
             hidden_activation=hparams["hidden_output_activation"],
         )
         
+        self.node_updating_network = make_mlp(
+            hparams["latent"],
+            hparams["hidden"],
+            hparams["emb_dim"],
+            hparams["output_layers"],
+            layer_norm=hparams["layernorm"],
+            output_activation=None,
+            hidden_activation=hparams["hidden_output_activation"],
+        )
+        
+        self.supernode_updating_network = make_mlp(
+            hparams["latent"],
+            hparams["hidden"],
+            hparams["emb_dim"],
+            hparams["output_layers"],
+            layer_norm=hparams["layernorm"],
+            output_activation=None,
+            hidden_activation=hparams["hidden_output_activation"],
+        )
+        
         self.superedge_encoder = make_mlp(
             2*hparams["latent"],
             hparams["hidden"],
@@ -494,7 +510,13 @@ class SparseHierarchicalGNNAttention(nn.Module):
             hidden_activation=hparams["hidden_activation"],
         )
         
-        self.HDBSCANmodel = hdbscanmodel
+        if hparams["clustering_model"] == "DBSCAN":
+            self.model = DBSCAN(min_samples = hparams["min_samples"], eps = hparams["DBSCAN_eps"]) 
+        if hparams["clustering_model"] == "HDBSCAN":
+            self.model = HDBSCAN(min_cluster_size = hparams["min_cluster_size"])
+        if hparams["clustering_model"] == "KMEANS":
+            self.model = KMeans(n_clusters = hparams["kmeans"])
+        
         self.log = logging
         
         self.hparams = hparams
@@ -506,18 +528,10 @@ class SparseHierarchicalGNNAttention(nn.Module):
         embeddings = nn.functional.normalize(embeddings) + torch.normal(0, 2e-3, embeddings.shape, device = embeddings.device)
        
         # Clustering
-        clustering_input = cudf.DataFrame(embeddings)
-        
-        if self.hparams["clustering_model"] == "DBSCAN":
-            model = DBSCAN(min_samples = self.hparams["min_samples"], eps = self.hparams["DBSCAN_eps"]) 
-        if self.hparams["clustering_model"] == "HDBSCAN":
-            model = HDBSCAN(min_cluster_size = self.hparams["min_cluster_size"])
-        if self.hparams["clustering_model"] == "KMEANS":
-            model = KMeans(n_clusters=self.hparams["kmeans"])
-        
-        clusters = model.fit_predict(clustering_input)
+        clustering_input = cudf.DataFrame(embeddings)        
+        clusters = self.model.fit_predict(clustering_input)
 
-        del model
+        del clustering_input
         
         clusters = torch.as_tensor(clusters, device = nodes.device).long()
         if (clusters >= 0).any():
@@ -526,7 +540,6 @@ class SparseHierarchicalGNNAttention(nn.Module):
             clusters = clusters + 1
         
         return clusters
-        
         
     def forward(self, nodes, clusters):
         
@@ -550,9 +563,9 @@ class SparseHierarchicalGNNAttention(nn.Module):
         
         # Compute bipartite attention
         attention = torch.einsum('ij,ij->i', embeddings[bipartite_graph[0]], means[bipartite_graph[1]]) 
-        # att_max = scatter_max(attention, bipartite_graph[0], dim=0, dim_size = nodes.shape[0])[0][bipartite_graph[0]]
+        att_max = scatter_max(attention, bipartite_graph[0], dim=0, dim_size = nodes.shape[0])[0][bipartite_graph[0]]
         att_min = scatter_min(attention, bipartite_graph[0], dim=0, dim_size = nodes.shape[0])[0][bipartite_graph[0]]
-        attention = 2*(attention - att_min)/(1e-4 + (1 - att_min).detach())
+        attention = 2*(attention - att_min)/(1e-4 + (att_max - att_min).detach())
         attention = torch.exp(attention)
         bipartite_graph_attention = attention/(1e-4 + scatter_add(attention, bipartite_graph[0], dim=0, dim_size = nodes.shape[0])[bipartite_graph[0]])
         bipartite_graph_attention = bipartite_graph_attention.unsqueeze(1)
@@ -566,9 +579,9 @@ class SparseHierarchicalGNNAttention(nn.Module):
         
         # Supergraph Attention
         attention = torch.einsum("ij, ij -> i", means[super_graph[0]], means[super_graph[1]])
-        # att_max = scatter_max(attention, super_graph[1], dim=0, dim_size = means.shape[0])[0][super_graph[1]]
+        att_max = scatter_max(attention, super_graph[1], dim=0, dim_size = means.shape[0])[0][super_graph[1]]
         att_min = scatter_min(attention, super_graph[1], dim=0, dim_size = means.shape[0])[0][super_graph[1]]
-        attention = 2*(attention - att_min)/(1e-4 + (1 - att_min).detach())
+        attention = 2*(attention - att_min)/(1e-4 + (att_max - att_min).detach())
         attention = torch.tanh(attention)
         super_graph_attention = attention.unsqueeze(1)
         
@@ -698,7 +711,7 @@ class SparseHierarchicalGNN(EmbeddingBase):
                     self.supergraph_construction(nodes, clusters)
         
         for layer in self.hgnn_blocks:
-
+            
             nodes, edges, supernodes, superedges = layer(nodes,
                                                          edges,
                                                          supernodes,
@@ -711,4 +724,4 @@ class SparseHierarchicalGNN(EmbeddingBase):
                              
         nodes = self.output_layer(nodes)
         
-        return nn.functional.normalize(nodes)        
+        return nn.functional.normalize(nodes)

@@ -86,6 +86,10 @@ class EmbeddingDataset(Dataset):
             mask = (event.pid != 0)
         if self.hparams["hard_ptcut"]:
             mask = mask & (event.pt > self.hparams["ptcut"])
+        if self.hparams["cut_edges"]:
+            event.edge_index = event.edge_index[:, event.scores > self.hparams["score_cut"]]
+            for i in ["y", "y_pid", "pid_signal", "scores"]:
+                event[i] = event[i][event.scores > self.hparams["score_cut"]]
 
         inverse_mask = torch.zeros(len(event.pid)).long()
         inverse_mask[mask] = torch.arange(mask.sum())
@@ -175,13 +179,34 @@ def generate_toys(num_tracks, track_dis_width, num_layers, min_r, max_r, detecto
     signal_true_graph = truth_graph[:, (node_feature[:, 3][truth_graph] > ptcut).all(0)]
     
     fully_connected_graph = np.vstack([np.resize(idxs, (len(idxs),len(idxs))).flatten(), np.resize(idxs, (len(idxs),len(idxs))).T.flatten()])
+    fully_connected_graph = fully_connected_graph[:, np.random.choice(fully_connected_graph.shape[1], size = min(1000, len(node_feature))*len(node_feature), replace = False)]
+        
     del_x = (node_feature[fully_connected_graph[1], 0] - node_feature[fully_connected_graph[0], 0])
-    del_y = np.abs((node_feature[fully_connected_graph[0], 1] - node_feature[fully_connected_graph[1], 1]))
-    fully_connected_graph = fully_connected_graph[:, (del_x <= 2*detector_width/num_layers) & (del_x > 0) & (del_y<0.4)]
-    fully_connected_graph = fully_connected_graph[:, fully_connected_graph[0] != fully_connected_graph[1]]
+    del_y = np.abs(node_feature[fully_connected_graph[1], 1] - node_feature[fully_connected_graph[0], 1])
+    sine = np.sin(np.abs(np.arctan(node_feature[fully_connected_graph[1], 1]/node_feature[fully_connected_graph[1], 0]) - 
+                        np.arctan(node_feature[fully_connected_graph[0], 1]/node_feature[fully_connected_graph[0], 0]))
+    )
+    
+    a = np.sqrt((node_feature[fully_connected_graph[1], 1] - node_feature[fully_connected_graph[0], 1])**2 + 
+               (node_feature[fully_connected_graph[1], 0] - node_feature[fully_connected_graph[0], 0])**2)
+    R = a/sine/2
+    fully_connected_graph = fully_connected_graph[:, (del_x <= 2*detector_width/num_layers) & (del_x > 0) & (R>min_r) & (R<max_r) & (del_y/R < 1/num_layers)]
+    R = R[(del_x <= 2*detector_width/num_layers) & (del_x > 0) & (R>min_r) & (R<max_r) & (del_y/R < 1/num_layers)]
+    R = R[node_feature[fully_connected_graph[0], 2] != node_feature[fully_connected_graph[1], 2]]
+    fully_connected_graph = fully_connected_graph[:, node_feature[fully_connected_graph[0], 2] != node_feature[fully_connected_graph[1], 2]]
+    
+    R = R
+    counts = np.histogram(R, bins=np.linspace(np.min(R), np.max(R)+1e-12, 21))[0]
+    weights = 1/(1e-12 + counts)
+    index = np.digitize(R, np.linspace(np.min(R), np.max(R)+1e-12, 21)) - 1
+    weights = weights[index]
+    weights = weights/np.sum(weights)
 
-    truth_graph_samples = signal_true_graph[:, np.random.random_sample(size=signal_true_graph.shape[1]) < eff]
-    fake_graph_samples = fully_connected_graph[:, np.random.random_sample(size=fully_connected_graph.shape[1]) < (1-pur)/pur*truth_graph_samples.shape[1]/fully_connected_graph.shape[1]]
+    truth_graph_samples = signal_true_graph[:, np.random.choice(signal_true_graph.shape[1], replace = False, size = int(eff*signal_true_graph.shape[1]))]
+    if int((1-pur)/pur*truth_graph_samples.shape[1]*eff) < fully_connected_graph.shape[1]:
+        fake_graph_samples = fully_connected_graph[:, np.random.choice(fully_connected_graph.shape[1], size = int((1-pur)/pur*truth_graph_samples.shape[1]*eff), replace = False, p = weights)]
+    else:
+        fake_graph_samples = fully_connected_graph
 
     graph = np.concatenate([truth_graph_samples, fake_graph_samples], axis = 1)
     
