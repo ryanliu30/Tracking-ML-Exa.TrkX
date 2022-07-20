@@ -207,7 +207,7 @@ class HierarchicalGNNAttention(nn.Module):
         
         # Compute Embeddings
         embeddings = self.clustering_network(nodes)
-        embeddings = nn.functional.normalize(embeddings) + torch.normal(0, 2e-3, embeddings.shape, device = embeddings.device)
+        embeddings = nn.functional.normalize(embeddings) + torch.normal(0, 1e-3, embeddings.shape, device = embeddings.device)
        
         # Clustering
         clustering_input = cudf.DataFrame(embeddings)        

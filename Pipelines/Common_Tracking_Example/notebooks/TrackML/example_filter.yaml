@@ -1,13 +1,13 @@
 # Input/output configuration
-input_dir: /global/project/projectdirs/m3443/usr/vsreenivasan/embedding_processed_updated/results/
-output_dir: /project/projectdirs/m3443/data/ITk-upgrade/processed/filter_processed/1_GeV_unweighted
+input_dir: /global/cfs/cdirs/m3443/data/trackml-codalab/embedding_processed/0GeV_cut_testing_high_eff/
+output_dir: /global/cfs/cdirs/m3443/data/trackml-codalab/filter_processed/0GeV_cut_testing_high_eff/
 project: ITk_1GeV_Filter
-filter_cut: 0.15
+edge_cut: 0.5
 
 # Dataset parameters
 pt_min: 0
 datatype_names: [train, val, test] # Which directory prefixes to use, assuming at least a train dataset 
-datatype_split: [50, 10, 10] # Number of [training, validation, testing] examples
+datatype_split: [100, 100, 100] # Number of [training, validation, testing] examples
 endcaps: True
 layerwise: False
 layerless: True
@@ -16,8 +16,11 @@ adjacent: False
 
 # Model parameters
 in_channels: 12
-hidden: 512
-nb_layer: 3
+edges_per_batch: 10000
+spatial_channels: 3
+cell_channels: 9
+hidden: 1024
+nb_layer: 8
 emb_channels: 0
 layernorm: True
 batchnorm: False
@@ -27,9 +30,9 @@ weight: 2
 warmup: 50
 lr: 0.01
 factor: 0.3
-patience: 8
+patience: 2
 regime: [ci]
-max_epochs: 20
+max_epochs: 100
 
 # Post-processing
 callbacks: [] #[FilterInferenceCallback]

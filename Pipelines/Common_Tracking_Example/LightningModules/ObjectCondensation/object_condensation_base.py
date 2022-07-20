@@ -305,14 +305,14 @@ class ObjectCondensationBase(LightningModule):
             loss = loss/(1+self.hparams["assignmnet_loss_weight"]+self.hparams["regression_loss_weight"])
             
             loss_log = {                    
-                        "embedding_loss": emb_loss.item(),
-                        "assignment_loss": asgmt_loss.item(),
-                        "regression_loss": reg_loss.item()
+                        "val_embedding_loss": emb_loss.item(),
+                        "val_assignment_loss": asgmt_loss.item(),
+                        "val_regression_loss": reg_loss.item()
                        }
         else:
             loss = asgmt_loss
             loss_log = {                    
-                        "assignment_loss": asgmt_loss.item()
+                        "val_assignment_loss": asgmt_loss.item()
                        }
  
         # Compute Tracking Efficiency

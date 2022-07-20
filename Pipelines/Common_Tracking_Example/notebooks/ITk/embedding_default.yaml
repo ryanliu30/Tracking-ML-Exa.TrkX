@@ -3,7 +3,7 @@ input_dir: /global/cfs/cdirs/m3443/data/ITk-upgrade/processed/gnn_processed/0GeV
 
 # Dataset parameters
 datatype_names: [train, val, test] # Which directory prefixes to use, assuming at least a train dataset 
-train_split: [1000, 50, 0] # Number of [training, validation, testing] examples
+train_split: [1000, 50, 100] # Number of [training, validation, testing] examples
 true_edges: modulewise_true_edges
 score_cut: 0.15
 ptcut: 1000.

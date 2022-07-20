@@ -7,26 +7,26 @@ import scipy as sp
 import numpy as np
 
 from torch.utils.data import Dataset, DataLoader
+from torch_geometric.data import Data
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def load_dataset_paths(input_dirs, num):
+def load_dataset(input_dir, num):
     paths = []
-    for input_dir in input_dirs:
-        all_events = os.listdir(input_dir)
-        all_events = sorted([os.path.join(input_dir, event) for event in all_events])
-        paths.extend(all_events)
-        
-    return paths[:num]
 
-class filter_dataset(Dataset):
+    all_events = os.listdir(input_dir)
+    all_events = sorted([os.path.join(input_dir, event) for event in all_events])
+    paths.extend(all_events)
+        
+    return FilterDataset(paths[:num])
+
+class FilterDataset(Dataset):
     
-    def __init__(self, dataset, hparams, stage = "train"):
+    def __init__(self, dataset, stage = "train"):
         
         # Setup here
         self.dataset = dataset
-        self.hparams = hparams
         self.stage = stage
         
     def __len__(self):
@@ -36,12 +36,7 @@ class filter_dataset(Dataset):
     def __getitem__(self, idx):
         
         batch = torch.load(self.dataset[idx], map_location=torch.device("cpu"))
-        
-        if self.stage == "train":
-            try:
-                delattr(batch, "dists")
-            except:
-                pass
+        batch = Data.from_dict(batch.__dict__)
         
         return batch    
     

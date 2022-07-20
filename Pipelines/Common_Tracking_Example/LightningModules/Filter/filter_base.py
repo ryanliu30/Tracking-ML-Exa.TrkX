@@ -18,7 +18,7 @@ from sklearn.metrics import roc_auc_score
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Local imports
-from .utils import graph_intersection, load_dataset, filter_dataset
+from .utils import graph_intersection, load_dataset
 
 class FilterBase(LightningModule):
     def __init__(self, hparams):

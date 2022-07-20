@@ -1,5 +1,5 @@
 # Input/output configuration
-input_dir: /global/cfs/cdirs/m3443/data/ITk-upgrade/processed/gnn_processed/0GeV_barrel_v3
+input_dir: /global/cfs/cdirs/m3443/data/ITk-upgrade/processed/gnn_processed/0GeV_v3
 
 # Dataset parameters
 datatype_names: [train, val, test] # Which directory prefixes to use, assuming at least a train dataset 
@@ -17,7 +17,7 @@ use_pretrain: False
 noise: True
 hard_ptcut: False
 cut_edges: True
-noise_cut: 0.8
+noise_cut: 0.7
 
 # Model parameters
 spatial_channels: 3

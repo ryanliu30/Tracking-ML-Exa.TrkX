@@ -9,7 +9,6 @@ from pytorch_lightning.callbacks import Callback
 from torch.nn import Linear
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_cluster import radius_graph
 import torch
 from torch_geometric.data import DataLoader
 

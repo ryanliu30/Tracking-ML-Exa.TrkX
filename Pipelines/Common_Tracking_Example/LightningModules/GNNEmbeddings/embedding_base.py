@@ -238,8 +238,6 @@ class EmbeddingBase(LightningModule):
         
         if log:
             
-            current_lr = self.optimizers().param_groups[0]["lr"]
-            
             self.log_dict(
                 {
                     "pur": pur,
@@ -251,7 +249,6 @@ class EmbeddingBase(LightningModule):
                     "track_pur": track_pur,
                     "fake_rate": fake_rate,
                     "val_loss": loss,
-                    "current_lr": current_lr
                 }
             )
         return {
@@ -276,7 +273,7 @@ class EmbeddingBase(LightningModule):
         """
         Step to evaluate the model's performance
         """
-        outputs = self.shared_evaluation(batch, batch_idx, log=False)
+        outputs = self.shared_evaluation(batch, batch_idx, log=True)
 
         return outputs
 
