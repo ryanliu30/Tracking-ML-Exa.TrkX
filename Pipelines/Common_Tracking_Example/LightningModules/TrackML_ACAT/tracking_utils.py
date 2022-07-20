@@ -37,7 +37,7 @@ def eval_metrics(bipartite_graph, event, pt_cut = 1., nhits_cut = 5, majority_cu
     track_eff = mask.sum()/truth_mask.sum()
     track_pur = (pid_cluster_mapping[row_match, col_match]/pid_cluster_mapping[:, col_match].sum(0)).mean()
     fake_rate = 1 - mask.sum()/(pid_cluster_mapping.shape[1] - (~matching_mask).sum() - (~mask).sum())    
-    hit_eff = pid_cluster_mapping[row_match, col_match][mask.reshape(1, -1)].sum()/(selected_hits).sum()
+    hit_eff = pid_cluster_mapping[row_match, col_match][mask.reshape(1, -1)].sum()/(nhits[row_match][mask]).sum()
 
     return {
         "track_eff": track_eff.item(),
