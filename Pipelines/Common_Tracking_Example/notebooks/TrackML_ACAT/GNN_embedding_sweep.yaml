@@ -1,3 +1,4 @@
-n_hierarchical_graph_iters: {"values": [8, 6, 4]}
-latent: {"values": [256, 128, 64]}
-hidden_ratio: {"values": [2, 1]}
+# n_hierarchical_graph_iters: {"values": [8, 6, 4]}
+# latent: {"values": [256, 128, 64]}
+# hidden_ratio: {"values": [2, 1]}
+model: {"values": [IGNN, HGNN]}

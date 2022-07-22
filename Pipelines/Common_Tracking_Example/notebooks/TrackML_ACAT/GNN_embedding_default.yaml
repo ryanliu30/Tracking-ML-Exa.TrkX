@@ -20,7 +20,7 @@ hard_ptcut: 0
 model: HGNN
 spatial_channels: 3
 cell_channels: 8
-latent: 128
+latent: 256
 hidden: ratio
 hidden_ratio: 2
 emb_dim: 8
@@ -41,7 +41,7 @@ factor: 0.99
 share_weight: False
 patience: 1
 regime: []
-max_epochs: 100
+max_epochs: 500
 majority_cut: 0.5
 log_weight_ratio: 0
 bipartitegraph_sparsity: 5

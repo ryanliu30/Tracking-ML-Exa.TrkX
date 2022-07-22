@@ -1,7 +1,11 @@
 import torch
 import cupy as cp
 import numpy as np
-from torch_scatter import scatter_min, scatter_sum
+from torch_scatter import scatter_add, scatter_mean, scatter_max, scatter_min
+from matplotlib import cm
+from sklearn.manifold import TSNE
+from torch import nn
+import matplotlib.pyplot as plt
 
 def eval_metrics(bipartite_graph, event, pt_cut = 1., nhits_cut = 5, majority_cut = 0.5, primary = True):
 
@@ -46,6 +50,58 @@ def eval_metrics(bipartite_graph, event, pt_cut = 1., nhits_cut = 5, majority_cu
         "hit_eff": hit_eff.item()
     }
 
-def visualizing_embedding_space(event, embeddings, labels, axs, num_tracks_visualized):
+def visualizing_embedding_space(event, embeddings, labels, num_tracks_visualized = 100, regime = "node embedding"):
+    
     event = event.cpu()
-    x, y, z = event.x[:,2], event.x[:, 0]*torch.cos(event.x[:, 1]*np.pi), event.x[:, 0]*torch.sin(event.x[:, 1]*np.pi)
+    ax = plt.axes(projection='3d')
+    
+    selection_mask = event.pid.unique(return_inverse = True)[1]
+    selection_mask = torch.randperm(selection_mask.max())[selection_mask]
+    selection_mask = ((selection_mask < num_tracks_visualized) | (event.pid == 0))
+    
+    edge_mask = torch.zeros(len(event.pid)).long()
+    edge_mask[selection_mask] = torch.arange(selection_mask.sum()+1)
+    
+    coords = event.x[selection_mask]
+    edges = edge_mask[event.modulewise_true_edges]
+    
+    embeddings = embeddings[selection_mask]
+    labels = labels[selection_mask]
+    x, y, z = coords[:,2].numpy(), (coords[:, 0]*torch.cos(coords[:, 1]*np.pi)).numpy(), (coords[:, 0]*torch.sin(coords[:, 1]*np.pi)).numpy()
+    
+    if regime not in ["node embedding", "mean embedding", "random coloring"]:
+        raise ValueError('regime must be one of node embedding, mean embedding, or random coloring')
+        
+    if regime == "node embedding":
+        embeddings = torch.tensor(TSNE(n_components = 1, init = "pca").fit_transform(embeddings.cpu().numpy()))
+        embeddings = (embeddings-embeddings.min())/(embeddings.max()-embeddings.min())
+        node_color = cm.gist_rainbow(embeddings)
+        
+    if regime == "mean embedding":
+        node_color = cm.Greys(np.ones(len(coords)))
+        
+        means = nn.functional.normalize(scatter_mean(embeddings[labels >= 0], labels[labels >= 0], dim = 0)).cpu().numpy()
+        means = torch.tensor(TSNE(n_components = 1, init = "pca").fit_transform(means))
+        means = (means-means.min())/(means.max()-means.min())
+    
+        node_color[labels >= 0] = cm.gist_rainbow(means[labels[labels >= 0]])
+        
+    if regime == "random coloring":
+        node_color = cm.Greys(np.ones(len(coords)))
+        labels[labels >= 0] = torch.randperm(labels.max()+1)[labels[labels >= 0]]
+        labels = labels.float()/labels.max()
+        node_color[labels >= 0] = cm.gist_rainbow(labels[labels >= 0])
+        
+    ax.plot3D(x[edges], y[edges], z[edges], linestyle='-', color='y',
+        markerfacecolor='red', marker='o')
+    ax.scatter3D(x, y, z, c=node_color)
+    
+    return ax
+    
+        
+    
+        
+        
+        
+        
+    
