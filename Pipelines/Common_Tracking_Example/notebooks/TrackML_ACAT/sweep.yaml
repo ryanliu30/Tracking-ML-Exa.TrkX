@@ -1,0 +1,3 @@
+# model: {"values": ["EC-IN", "Embedding-IN", "Embedding-HGNN-GMM", "Embedding-HGNN-HDBSCAN"]}
+model: {"values": [Embedding-HGNN-GMM]}
+edge_dropping_ratio:  {"values": [0, 0.2]}

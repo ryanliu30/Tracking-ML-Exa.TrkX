@@ -79,6 +79,7 @@ class EmbeddingDataset(Dataset):
         
         event = torch.load(self.dirs[key], map_location=torch.device(self.device))
         event = Data.from_dict(event.__dict__)
+        event.scores = (event.scores[:len(event.scores)//2] + event.scores[len(event.scores)//2:])/2
         
         if self.hparams["noise"]:
             mask = (event.pid == event.pid)
@@ -97,6 +98,13 @@ class EmbeddingDataset(Dataset):
             event.signal_mask = ((event.nhits >= self.hparams["n_hits"]) & (event.primary == 1))
         else:
             event.signal_mask = (event.nhits >= self.hparams["n_hits"])
+            
+        
+        if "edge_dropping_ratio" in self.hparams:  
+            if self.hparams["edge_dropping_ratio"] != 0:
+                edge_mask = (torch.rand(event.edge_index.shape[1]) >= self.hparams["edge_dropping_ratio"])
+                event.edge_index = event.edge_index[:, edge_mask]
+                event.y, event.y_pid, event.scores = event.y[edge_mask], event.y_pid[edge_mask], event.scores[edge_mask]
 
         for i in ["y", "y_pid"]:
             graph_mask = mask[event.edge_index].all(0)
@@ -307,6 +315,43 @@ def FRNN_graph(embeddings, r, k):
                         idxs[positive_idxs]
                         ], dim = 0)     
     return edges
+
+def edge_pool(nodes, edges, edge_scores):
+    
+    nodes_remaining = set(range(len(nodes)))
+    cluster = torch.empty(nodes.shape[0], device=torch.device('cpu'))
+    edge_argsort = edge_scores.detach().cpu().numpy().argsort(kind='stable')[::-1]  # Use stable sort
+
+    i = 0
+    new_edge_indices = []
+    edge_index_cpu = edge_index.cpu()
+    for edge_idx in edge_argsort.tolist():
+
+        source = edge_index_cpu[0, edge_idx].item()
+        if source not in nodes_remaining:
+            continue
+
+        target = edge_index_cpu[1, edge_idx].item()
+        if target not in nodes_remaining:
+            continue
+
+        new_edge_indices.append(edge_idx)
+
+        cluster[source] = i
+        nodes_remaining.remove(source)
+
+        if source != target:
+            cluster[target] = i
+            nodes_remaining.remove(target)
+
+        i += 1
+
+    # The remaining nodes are simply kept.
+    for node_idx in nodes_remaining:
+        cluster[node_idx] = i
+        i += 1
+        
+    cluster = cluster.to(nodes.device)
         
         
         

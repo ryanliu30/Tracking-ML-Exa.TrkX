@@ -1,0 +1,3 @@
+project: TrackML-1GeV
+gpus: 4
+nodes: 1

@@ -24,8 +24,9 @@ from cuml.cluster import HDBSCAN, KMeans
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Local imports
+sys.path.append("../..")
 from .utils import load_dataset_paths, EmbeddingDataset, FRNN_graph, graph_intersection
-from ..tracking_utils import eval_metrics
+from tracking_utils import eval_metrics
 
 class EmbeddingBase(LightningModule):
     def __init__(self, hparams):
@@ -123,7 +124,9 @@ class EmbeddingBase(LightningModule):
             
             new_graph = torch.cat([prediction_graph, e_bidir], dim = 1)
             y = (batch.pid[new_graph[0]] == batch.pid[new_graph[1]]) & (batch.pid[new_graph] != 0).all(0)
-            new_graph = new_graph[:, (batch.signal_mask[new_graph]).all(0) | y == 0]
+            mask = (batch.signal_mask[new_graph]).all(0) | y == 0
+            new_graph = new_graph[:, mask]
+            y = y[mask]
             
         return new_graph, y
     
@@ -201,16 +204,13 @@ class EmbeddingBase(LightningModule):
                     "val_loss": loss,
                 }
             )
-        return {
-                    **tracking_performace_metrics,
-                    "val_loss": loss,
-               }
+        return bipartite_graph, loss
 
     def validation_step(self, batch, batch_idx):
 
         outputs = self.shared_evaluation(batch, batch_idx, log=True)
 
-        return outputs["val_loss"]
+        return outputs[1]
 
     def test_step(self, batch, batch_idx):
         """
@@ -218,7 +218,7 @@ class EmbeddingBase(LightningModule):
         """
         outputs = self.shared_evaluation(batch, batch_idx, log=True)
 
-        return outputs
+        return outputs[1]
 
     def optimizer_step(
         self,
