@@ -15,6 +15,7 @@ import cupy as cp
 from sklearn.mixture import GaussianMixture
 import cugraph
 from scipy.optimize import fsolve
+import numpy as np
 
 
 from .gnn_utils import InteractionGNNCell, HierarchicalGNNCell, DynamicGraphConstruction
@@ -158,7 +159,8 @@ class HierarchicalGNNBlock(nn.Module):
         self.hparams = hparams
         
     def determine_cut(self, cut0):
-        func = lambda x: self.GMM_model.predict_proba(x.reshape((-1, 1)))[:, 0] - self.GMM_model.predict_proba(x.reshape((-1, 1)))[:, 1]
+        sigmoid = lambda x: 1/(1+np.exp(-x))
+        func = lambda x: sigmoid(self.hparams["cluster_granularity"])*self.GMM_model.predict_proba(x.reshape((-1, 1)))[:, self.GMM_model.means_.argmin()] - sigmoid(-self.hparams["cluster_granularity"])*self.GMM_model.predict_proba(x.reshape((-1, 1)))[:, self.GMM_model.means_.argmax()]
         cut = fsolve(func, cut0)
         return cut.item()
         
@@ -177,6 +179,10 @@ class HierarchicalGNNBlock(nn.Module):
             cut = self.determine_cut(self.score_cut.data.item())
             if self.training & (cut < self.GMM_model.means_.max().item()) & (cut > self.GMM_model.means_.min().item()):
                 self.score_cut.data = 0.95*self.score_cut.data + 0.05*self.determine_cut(self.score_cut.data.item())
+            else:
+                cut = self.determine_cut(self.GMM_model.means_.mean().item())
+                if self.training & (cut < self.GMM_model.means_.max().item()) & (cut > self.GMM_model.means_.min().item()):
+                    self.score_cut.data = 0.95*self.score_cut.data + 0.05*self.determine_cut(self.score_cut.data.item())
             
             self.log("score_cut", self.score_cut.data.item())
             
@@ -184,7 +190,8 @@ class HierarchicalGNNBlock(nn.Module):
             G = cugraph.Graph()
             mask = likelihood >= self.score_cut.to(likelihood.device)
             df = cudf.DataFrame({"src": cp.asarray(graph[0, mask]),
-                                 "dst": cp.asarray(graph[1, mask])})
+                                 "dst": cp.asarray(graph[1, mask]),
+                                })            
             G.from_cudf_edgelist(df, source = "src", destination = "dst")
             connected_components = cugraph.components.connected_components(G)
             

@@ -212,7 +212,7 @@ class BipartiteClassificationBase(LightningModule):
         asgmt_loss = torch.dot(asgmt_loss, self.get_asgmt_weight(batch, pt, bipartite_graph, truth, row_match, col_match))
         
         # Compute final loss using scheduling
-        loss_schedule = 0.98**self.trainer.current_epoch
+        loss_schedule = 1 - np.sin(self.trainer.current_epoch/2/self.hparams["emb_epoch"]*np.pi) if self.trainer.current_epoch < self.hparams["emb_epoch"] else 0
         loss = (loss_schedule * emb_loss) + ((1-loss_schedule)*asgmt_loss)
         
         self.log_dict(
@@ -275,16 +275,19 @@ class BipartiteClassificationBase(LightningModule):
         truth[matched_hits] = (pid_assignments[pid[bipartite_graph[0]][matched_hits]] == bipartite_graph[1][matched_hits])
         asgmt_loss = torch.nn.functional.binary_cross_entropy(bipartite_scores, truth.float(), reduction='none')
         asgmt_loss = torch.dot(asgmt_loss, self.get_asgmt_weight(batch, pt, bipartite_graph, truth, row_match, col_match))
-
-        loss_schedule = 0.98**self.trainer.current_epoch
-        loss = (loss_schedule * emb_loss) + ((1-loss_schedule)*asgmt_loss)
         
+        if hasattr(self.trainer, "current_epoch") and self.training:
+            loss_schedule = 1 - np.sin(self.trainer.current_epoch/2/self.hparams["emb_epoch"]*np.pi) if self.trainer.current_epoch < self.hparams["emb_epoch"] else 0
+        else:
+            loss_schedule = 0
+
+        loss = (loss_schedule * emb_loss) + ((1-loss_schedule)*asgmt_loss)
         self.log_dict(
             {
                 "val_loss": loss,
                 "val_embedding_loss": emb_loss,
                 "val_assignment_loss": asgmt_loss
-                
+
             }
         )
         

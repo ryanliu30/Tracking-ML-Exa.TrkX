@@ -48,6 +48,8 @@ log_weight_ratio: 0
 bipartitegraph_sparsity: 5
 supergraph_sparsity: 10
 min_cluster_size: 3
+cluster_granularity: 3
+emb_epoch: 50
 
 
 # Toy Model
