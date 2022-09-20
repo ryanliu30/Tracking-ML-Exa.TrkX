@@ -19,6 +19,7 @@ from sklearn.metrics import roc_auc_score
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import min_weight_full_bipartite_matching
 from cuml.cluster import HDBSCAN, KMeans
+from torch_geometric.data import Data
 from sklearn.mixture import GaussianMixture
 
 
@@ -26,7 +27,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Local imports
 sys.path.append("../..")
-from .utils import load_dataset_paths, BipartiteClassificationDataset, FRNN_graph, graph_intersection
+from utils import TrackMLDataset, load_dataset_paths, FRNN_graph, graph_intersection
 from tracking_utils import eval_metrics
 
 class BipartiteClassificationBase(LightningModule):
@@ -46,21 +47,21 @@ class BipartiteClassificationBase(LightningModule):
         self.trainset, self.valset, self.testset = random_split(paths, self.hparams["train_split"], generator=torch.Generator().manual_seed(0))
         
     def train_dataloader(self):
-        self.trainset = BipartiteClassificationDataset(self.trainset, self.hparams, stage = "train", device = "cpu")
+        self.trainset = TrackMLDataset(self.trainset, self.hparams, stage = "train", device = "cpu")
         if self.trainset is not None:
             return DataLoader(self.trainset, batch_size=1, num_workers=16, shuffle = True)
         else:
             return None
 
     def val_dataloader(self):
-        self.valset = BipartiteClassificationDataset(self.valset, self.hparams, stage = "val", device = "cpu")
+        self.valset = TrackMLDataset(self.valset, self.hparams, stage = "val", device = "cpu")
         if self.valset is not None:
             return DataLoader(self.valset, batch_size=1, num_workers=16)
         else:
             return None
 
     def test_dataloader(self):
-        self.testset = BipartiteClassificationDataset(self.testset, self.hparams, stage = "test", device = "cpu")
+        self.testset = TrackMLDataset(self.testset, self.hparams, stage = "test", device = "cpu")
         if self.testset is not None:
             return DataLoader(self.testset, batch_size=1, num_workers=16)
         else:
@@ -167,7 +168,7 @@ class BipartiteClassificationBase(LightningModule):
         
     
     def training_step(self, batch, batch_idx):
-        
+       
         bipartite_graph, bipartite_scores, intermediate_embeddings = self(batch.x, batch.edge_index)
         
         # Compute embedding loss
@@ -212,7 +213,10 @@ class BipartiteClassificationBase(LightningModule):
         asgmt_loss = torch.dot(asgmt_loss, self.get_asgmt_weight(batch, pt, bipartite_graph, truth, row_match, col_match))
         
         # Compute final loss using scheduling
-        loss_schedule = 1 - np.sin(self.trainer.current_epoch/2/self.hparams["emb_epoch"]*np.pi) if self.trainer.current_epoch < self.hparams["emb_epoch"] else 0
+        if "loss_schedule" in self.hparams and self.hparams["loss_schedule"] is not None:
+            loss_schedule = self.hparams["loss_schedule"]
+        else:
+            loss_schedule = 1 - np.sin(self.trainer.current_epoch/2/self.hparams["emb_epoch"]*np.pi) if self.trainer.current_epoch < self.hparams["emb_epoch"] else 0
         loss = (loss_schedule * emb_loss) + ((1-loss_schedule)*asgmt_loss)
         
         self.log_dict(
@@ -276,10 +280,13 @@ class BipartiteClassificationBase(LightningModule):
         asgmt_loss = torch.nn.functional.binary_cross_entropy(bipartite_scores, truth.float(), reduction='none')
         asgmt_loss = torch.dot(asgmt_loss, self.get_asgmt_weight(batch, pt, bipartite_graph, truth, row_match, col_match))
         
-        if hasattr(self.trainer, "current_epoch") and self.training:
-            loss_schedule = 1 - np.sin(self.trainer.current_epoch/2/self.hparams["emb_epoch"]*np.pi) if self.trainer.current_epoch < self.hparams["emb_epoch"] else 0
+        if "loss_schedule" in self.hparams and isinstance(self.hparams["loss_schedule"], float):
+            loss_schedule = self.hparams["loss_schedule"]
         else:
-            loss_schedule = 0
+            if hasattr(self.trainer, "current_epoch") and self.training:
+                loss_schedule = 1 - np.sin(self.trainer.current_epoch/2/self.hparams["emb_epoch"]*np.pi) if self.trainer.current_epoch < self.hparams["emb_epoch"] else 0
+            else:
+                loss_schedule = 0
 
         loss = (loss_schedule * emb_loss) + ((1-loss_schedule)*asgmt_loss)
         self.log_dict(
@@ -293,9 +300,16 @@ class BipartiteClassificationBase(LightningModule):
         
         # Compute Tracking Efficiency
         bipartite_graph = bipartite_graph[:, bipartite_scores >= self.hparams["score_cut"]]
+        bipartite_graph[0] = batch.inverse_mask[bipartite_graph[0]]
+        event = torch.load(batch.dir[0], map_location=torch.device(self.device))
+        if "1GeV" in str(batch.dir[0]):
+            event = Data.from_dict(event.__dict__)
+        event.pt[event.pid == 0] = 0
+        _, inverse, counts = event.pid.unique(return_inverse = True, return_counts = True)
+        event.nhits = counts[inverse]
         try:
             tracking_performace_metrics = eval_metrics(bipartite_graph,
-                                                       batch,
+                                                       event,
                                                        pt_cut = self.hparams["ptcut"],
                                                        nhits_cut = self.hparams["n_hits"],
                                                        majority_cut = self.hparams["majority_cut"],

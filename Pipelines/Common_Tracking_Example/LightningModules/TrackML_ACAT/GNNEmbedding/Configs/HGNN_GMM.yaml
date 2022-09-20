@@ -1,31 +1,31 @@
 # Input/output configuration
-input_dir: /global/cfs/cdirs/m3443/data/trackml-codalab/gnn_processed/1GeV_pt_cut_quickstart_example
+input_dir: /global/cfs/cdirs/m3443/usr/ryanliu/TrackML_data/filter_processed/
 
 # Dataset parameters
 datatype_names: [train, val, test] # Which directory prefixes to use, assuming at least a train dataset 
-train_split: [300, 20, 20] # Number of [training, validation, testing] examples
+train_split: [2000, 100, 100] # Number of [training, validation, testing] examples
 true_edges: modulewise_true_edges
 ptcut: 1.0
 n_hits: 5
 weight_leak: 1.0
-weight_min: 0.
+weight_min: 0.5
 pt_interval: 0.5
 checkpointing: True
 use_pretrain: False
 primary: False
 noise: True
 hard_ptcut: 0
-edge_dropping_ratio: 0.2
+edge_dropping_ratio: 0.
 
 # Model parameters
 model: Embedding-HGNN-GMM
 spatial_channels: 3
 cell_channels: 8
-latent: 256
+latent: 128
 hidden: ratio
 hidden_ratio: 2
 emb_dim: 8
-n_interaction_graph_iters: 4
+n_interaction_graph_iters: 6
 n_hierarchical_graph_iters: 8
 nb_node_layer: 3
 nb_edge_layer: 2
@@ -36,18 +36,20 @@ hidden_output_activation: Tanh
 layernorm: True
 hidden_activation: GELU
 warmup: 100
-lr: 0.002
-factor: 0.99
+lr: 0.001
+factor: 0.95
 share_weight: False
 patience: 1
 regime: []
-max_epochs: 500
+max_epochs: 200
 majority_cut: 0.5
 log_weight_ratio: 0
 bipartitegraph_sparsity: 5
 supergraph_sparsity: 10
 min_cluster_size: 3
 inference_min_cluster_size: 5
+cluster_granularity: 3
+intermediate_epoch: 10
 
 
 # Toy Model

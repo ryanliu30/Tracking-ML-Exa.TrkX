@@ -11,6 +11,7 @@ from torch.utils.data import random_split
 from torch_geometric.data import DataLoader
 import numpy as np
 import cupy as cp
+import cudf
 import wandb
 from torch.utils.data import random_split
 import torch.nn as nn
@@ -18,14 +19,14 @@ from torch_scatter import scatter_mean, scatter_add, scatter_min
 from sklearn.metrics import roc_auc_score
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import min_weight_full_bipartite_matching
-from cuml.cluster import HDBSCAN, KMeans
+import cuml
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Local imports
 sys.path.append("../..")
-from .utils import load_dataset_paths, EmbeddingDataset, FRNN_graph, graph_intersection
+from utils import load_dataset_paths, TrackMLDataset, FRNN_graph, graph_intersection
 from tracking_utils import eval_metrics
 
 class EmbeddingBase(LightningModule):
@@ -35,7 +36,10 @@ class EmbeddingBase(LightningModule):
         Initialise the Lightning Module that can scan over different filter training regimes
         """
         self.save_hyperparameters(hparams)
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(self.device.index)
+        from cuml.cluster import HDBSCAN
         self.HDBSCANmodel = HDBSCAN(min_cluster_size = hparams["inference_min_cluster_size"], metric='euclidean', cluster_selection_method = "eom", verbose = 0)
+        
         
     def setup(self, stage):
         
@@ -45,21 +49,21 @@ class EmbeddingBase(LightningModule):
         self.trainset, self.valset, self.testset = random_split(paths, self.hparams["train_split"], generator=torch.Generator().manual_seed(0))
         
     def train_dataloader(self):
-        self.trainset = EmbeddingDataset(self.trainset, self.hparams, stage = "train", device = "cpu")
+        self.trainset = TrackMLDataset(self.trainset, self.hparams, stage = "train", device = "cpu")
         if self.trainset is not None:
             return DataLoader(self.trainset, batch_size=1, num_workers=16, shuffle = True)
         else:
             return None
 
     def val_dataloader(self):
-        self.valset = EmbeddingDataset(self.valset, self.hparams, stage = "val", device = "cpu")
+        self.valset = TrackMLDataset(self.valset, self.hparams, stage = "val", device = "cpu")
         if self.valset is not None:
             return DataLoader(self.valset, batch_size=1, num_workers=16)
         else:
             return None
 
     def test_dataloader(self):
-        self.testset = EmbeddingDataset(self.testset, self.hparams, stage = "test", device = "cpu")
+        self.testset = TrackMLDataset(self.testset, self.hparams, stage = "test", device = "cpu")
         if self.testset is not None:
             return DataLoader(self.testset, batch_size=1, num_workers=16)
         else:
@@ -153,16 +157,36 @@ class EmbeddingBase(LightningModule):
     
     def training_step(self, batch, batch_idx):
         
-        embeddings, *_ = self(batch.x, batch.edge_index)
+        embeddings, intermediate_embeddings, *_ = self(batch.x, batch.edge_index)
+        
+        y_pid = batch.pid[batch.edge_index[0]] == batch.pid[batch.edge_index[1]]
+        weights = self.get_training_weight(batch, batch.edge_index, y_pid)
+        hinge, dist = self.get_hinge_distance(batch, intermediate_embeddings, batch.edge_index, y_pid)
+
+        intermediate_loss = nn.functional.hinge_embedding_loss(dist, hinge, margin=self.hparams["train_r"], reduction='none').square()
+        intermediate_loss = torch.dot(intermediate_loss, weights)
         
         graph, y = self.get_training_samples(embeddings, batch) 
         weights = self.get_training_weight(batch, graph, y)
         hinge, dist = self.get_hinge_distance(batch, embeddings, graph, y)
         
-        loss = nn.functional.hinge_embedding_loss(dist, hinge, margin=self.hparams["train_r"], reduction='none').square()
-        loss = torch.dot(loss, weights)
+        emb_loss = nn.functional.hinge_embedding_loss(dist, hinge, margin=self.hparams["train_r"], reduction='none').square()
+        emb_loss = torch.dot(emb_loss, weights)
         
-        self.log("training_loss", loss)
+        if "loss_schedule" in self.hparams and self.hparams["loss_schedule"] is not None:
+            loss_schedule = self.hparams["loss_schedule"]
+        else:
+            loss_schedule = 1 - np.sin(self.trainer.current_epoch/2/self.hparams["intermediate_epoch"]*np.pi) if self.trainer.current_epoch < self.hparams["intermediate_epoch"] else 0
+        loss = (loss_schedule * intermediate_loss) + ((1-loss_schedule)*emb_loss)
+        
+        self.log_dict(
+                    {
+                        "training_loss": loss,
+                        "embedding_loss": emb_loss,
+                        "intermediate_loss": intermediate_loss
+
+                    }
+                )
         
         return loss 
 
@@ -172,36 +196,68 @@ class EmbeddingBase(LightningModule):
         """
         This method is shared between validation steps and test steps
         """
+        embeddings, intermediate_embeddings, *_ = self(batch.x, batch.edge_index)
         
-        embeddings, *_ = self(batch.x, batch.edge_index)
+        y_pid = batch.pid[batch.edge_index[0]] == batch.pid[batch.edge_index[1]]
+        weights = self.get_training_weight(batch, batch.edge_index, y_pid)
+        hinge, dist = self.get_hinge_distance(batch, intermediate_embeddings, batch.edge_index, y_pid)
+
+        intermediate_loss = nn.functional.hinge_embedding_loss(dist, hinge, margin=self.hparams["train_r"], reduction='none').square()
+        intermediate_loss = torch.dot(intermediate_loss, weights)
         
-        # Compute Validation Loss
         graph, y = self.get_training_samples(embeddings, batch) 
         weights = self.get_training_weight(batch, graph, y)
         hinge, dist = self.get_hinge_distance(batch, embeddings, graph, y)
-                     
-        loss = nn.functional.hinge_embedding_loss(dist, hinge, margin=self.hparams["train_r"], reduction='none').square()
-        loss = torch.dot(loss, weights)
         
-        # Compute Tracking Efficiency        
-        clusters = self.HDBSCANmodel.fit_predict(embeddings)
+        emb_loss = nn.functional.hinge_embedding_loss(dist, hinge, margin=self.hparams["train_r"], reduction='none').square()
+        emb_loss = torch.dot(emb_loss, weights)
+        
+        if "loss_schedule" in self.hparams and self.hparams["loss_schedule"] is not None:
+            loss_schedule = self.hparams["loss_schedule"]
+        else:
+            if hasattr(self.trainer, "current_epoch") and self.training:
+                loss_schedule = 1 - np.sin(self.trainer.current_epoch/2/self.hparams["intermediate_epoch"]*np.pi) if self.trainer.current_epoch < self.hparams["intermediate_epoch"] else 0
+            else:
+                loss_schedule = 0
+        loss = (loss_schedule * intermediate_loss) + ((1-loss_schedule)*emb_loss)
+        
+        self.log_dict(
+                    {
+                        "val_loss": loss,
+                        "val_embedding_loss": emb_loss,
+                        "val_intermediate_loss": intermediate_loss
+
+                    }
+                )
+        
+        # Compute Tracking Efficiency
+        clusters = self.HDBSCANmodel.fit_predict(cudf.DataFrame(cp.asarray(embeddings)))
         clusters = torch.as_tensor(clusters).long().to(self.device)
         bipartite_graph = torch.stack([torch.arange(len(clusters), device = self.device), clusters], dim = 0)
         bipartite_graph = bipartite_graph[:, clusters >= 0]
         
-        tracking_performace_metrics = eval_metrics(bipartite_graph,
-                                                   batch,
-                                                   pt_cut = self.hparams["ptcut"],
-                                                   nhits_cut = self.hparams["n_hits"],
-                                                   majority_cut = self.hparams["majority_cut"],
-                                                   primary = False)
+        bipartite_graph[0] = batch.inverse_mask[bipartite_graph[0]]
+        event = torch.load(batch.dir[0], map_location=torch.device(self.device))
+        if "1GeV" in str(batch.dir[0]):
+            event = Data.from_dict(event.__dict__)
+        event.pt[event.pid == 0] = 0
+        _, inverse, counts = event.pid.unique(return_inverse = True, return_counts = True)
+        event.nhits = counts[inverse]
+        try:
+            tracking_performace_metrics = eval_metrics(bipartite_graph,
+                                                       event,
+                                                       pt_cut = self.hparams["ptcut"],
+                                                       nhits_cut = self.hparams["n_hits"],
+                                                       majority_cut = self.hparams["majority_cut"],
+                                                       primary = False)
+        except:
+            tracking_performace_metrics = {}
         
         if log:
             
             self.log_dict(
                 {
                     **tracking_performace_metrics,
-                    "val_loss": loss,
                 }
             )
         return bipartite_graph, loss

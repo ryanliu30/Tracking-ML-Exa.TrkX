@@ -11,7 +11,7 @@ from mpl_toolkits import mplot3d
 def eval_metrics(bipartite_graph, event, pt_cut = 1., nhits_cut = 5, majority_cut = 0.5, primary = True):
     
     if majority_cut < 0.5:
-        raise UserWarning("A majority cut less than 50% will cause incorrect measuring of tracking performance")
+        raise UserWarning("A majority cut less than 50% will lead to incorrect measuring of tracking performance")
     if majority_cut == 0.5:
         majority_cut = majority_cut + 1e-12
     _, clusters, counts = bipartite_graph[1].unique(return_inverse = True, return_counts = True)

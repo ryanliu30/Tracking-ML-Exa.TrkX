@@ -1,3 +1,0 @@
-use_bidir_truth: {"values": [False, True]}
-use_dual_encoder: {"values": [True, False]}
-# weight_ratio: {"values": [0.4, 0.45, 0.5]}

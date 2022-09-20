@@ -10,6 +10,7 @@ from torch.nn import Linear
 import torch.nn.functional as F
 from torch.utils.data import random_split
 from torch_geometric.data import DataLoader
+from torch_geometric.data import Data
 import numpy as np
 import cupy as cp
 import wandb
@@ -28,7 +29,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 sys.path.append("../..")
 
 # Local imports
-from .utils import load_dataset_paths, EdgeClassifierDataset, FRNN_graph, graph_intersection
+from utils import load_dataset_paths, TrackMLDataset
 from tracking_utils import eval_metrics
 
 class EdgeClassifierBase(LightningModule):
@@ -48,21 +49,21 @@ class EdgeClassifierBase(LightningModule):
         self.trainset, self.valset, self.testset = random_split(paths, self.hparams["train_split"], generator=torch.Generator().manual_seed(0))
         
     def train_dataloader(self):
-        self.trainset = EdgeClassifierDataset(self.trainset, self.hparams, stage = "train", device = "cpu")
+        self.trainset = TrackMLDataset(self.trainset, self.hparams, stage = "train", device = "cpu")
         if self.trainset is not None:
             return DataLoader(self.trainset, batch_size=1, num_workers=16, shuffle = True)
         else:
             return None
 
     def val_dataloader(self):
-        self.valset = EdgeClassifierDataset(self.valset, self.hparams, stage = "val", device = "cpu")
+        self.valset = TrackMLDataset(self.valset, self.hparams, stage = "val", device = "cpu")
         if self.valset is not None:
             return DataLoader(self.valset, batch_size=1, num_workers=16)
         else:
             return None
 
     def test_dataloader(self):
-        self.testset = EdgeClassifierDataset(self.testset, self.hparams, stage = "test", device = "cpu")
+        self.testset = TrackMLDataset(self.testset, self.hparams, stage = "test", device = "cpu")
         if self.testset is not None:
             return DataLoader(self.testset, batch_size=1, num_workers=16)
         else:
@@ -118,10 +119,15 @@ class EdgeClassifierBase(LightningModule):
     
     def training_step(self, batch, batch_idx):
         
+        
         scores, *_ = self(batch.x, batch.edge_index)
-        graph = batch.edge_index[:, (batch.y_pid == 0)|(batch.y == 1)]
-        y = batch.y[(batch.y_pid == 0)|(batch.y == 1)]
-        scores = scores[(batch.y_pid == 0)|(batch.y == 1)]
+        if self.hparams["true_edges"] == "modulewise_true_edges":
+            graph = batch.edge_index[:, (batch.y_pid == 0)|(batch.y == 1)]
+            y = batch.y[(batch.y_pid == 0)|(batch.y == 1)]
+            scores = scores[(batch.y_pid == 0)|(batch.y == 1)]
+        elif self.hparams["true_edges"] == "pid_true_edges":
+            graph = batch.edge_index
+            y = batch.y_pid
         weights = self.get_training_weight(batch, graph, y.bool())
         
         loss = nn.functional.binary_cross_entropy(scores, y.float(), reduction='none')
@@ -139,9 +145,16 @@ class EdgeClassifierBase(LightningModule):
         """
         
         scores, *_ = self(batch.x, batch.edge_index)
-        cut_graph = batch.edge_index[:, (batch.y_pid == 0)|(batch.y == 1)]
-        cut_y = batch.y[(batch.y_pid == 0)|(batch.y == 1)]
-        cut_scores = scores[(batch.y_pid == 0)|(batch.y == 1)]
+        
+        if self.hparams["true_edges"] == "modulewise_true_edges":
+            cut_graph = batch.edge_index[:, (batch.y_pid == 0)|(batch.y == 1)]
+            cut_y = batch.y[(batch.y_pid == 0)|(batch.y == 1)]
+            cut_scores = scores[(batch.y_pid == 0)|(batch.y == 1)]
+        elif self.hparams["true_edges"] == "pid_true_edges":
+            cut_graph = batch.edge_index
+            cut_y = batch.y_pid
+            cut_scores = scores
+            
         weights = self.get_training_weight(batch, cut_graph, cut_y.bool())
         loss = nn.functional.binary_cross_entropy(cut_scores, cut_y.float(), reduction='none')
         loss = torch.dot(loss, weights)
@@ -161,8 +174,17 @@ class EdgeClassifierBase(LightningModule):
         G.from_cudf_edgelist(df, source = "src", destination = "dst", edge_attr = "weights")
         connected_components = cugraph.components.connected_components(G)
         bipartite_graph = torch.stack([torch.as_tensor(connected_components["vertex"]), torch.as_tensor(connected_components["labels"])], dim = 0)
+        
+        bipartite_graph[0] = batch.inverse_mask[bipartite_graph[0]]
+        event = torch.load(batch.dir[0], map_location=torch.device(self.device))
+        if "1GeV" in str(batch.dir[0]):
+            event = Data.from_dict(event.__dict__)
+        event.pt[event.pid == 0] = 0
+        _, inverse, counts = event.pid.unique(return_inverse = True, return_counts = True)
+        event.nhits = counts[inverse]
+        
         tracking_performace_metrics = eval_metrics(bipartite_graph,
-                                                   batch,
+                                                   event,
                                                    pt_cut = self.hparams["ptcut"],
                                                    nhits_cut = self.hparams["n_hits"],
                                                    majority_cut = self.hparams["majority_cut"],

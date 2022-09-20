@@ -17,6 +17,13 @@ def process_hparams(hparams):
     
     if hparams["hidden"] == "ratio":
         hparams["hidden"] = hparams["hidden_ratio"]*hparams["latent"]
+    
+    if "cluster_granularity" not in hparams:
+        hparams["cluster_granularity"] = 0
+    
+    if "gpus" in hparams:
+        hparams["lr"] *= hparams["gpus"]
+    
     return hparams
 
 def model_selector(model_name, sweep_configs = {}):

@@ -109,7 +109,7 @@ class HierarchicalGNNCell(nn.Module):
         
         # Compute new supernode features
         node_messages = scatter_add(bipartite_edge_weights*nodes[bipartite_graph[0]], bipartite_graph[1], dim=0, dim_size=supernodes.shape[0])
-        attention_messages = scatter_add(superedges[super_graph[0]]*super_edge_weights, super_graph[1], dim=0, dim_size=supernodes.shape[0])
+        attention_messages = scatter_add(superedges*super_edge_weights, super_graph[1], dim=0, dim_size=supernodes.shape[0])
         supernodes = checkpoint(self.supernode_network, torch.cat([supernodes, attention_messages, node_messages], dim=-1)) + supernodes
         del node_messages, attention_messages
         
@@ -120,11 +120,11 @@ class HierarchicalGNNCell(nn.Module):
         del supernode_messages, edge_messages
         
         # Compute new superedge features
-        superedges = checkpoint(self.superedge_network, torch.cat([supernodes[super_graph[0]], supernodes[super_graph[1]], superedges], dim=-1))+superedges
+        superedges = checkpoint(self.superedge_network, torch.cat([supernodes[super_graph[0]], supernodes[super_graph[1]], superedges], dim=-1)) + superedges
         
         # Compute new edge features
         edges = checkpoint(self.edge_network, torch.cat([nodes[graph[0]], nodes[graph[1]], edges], dim=-1)) + edges
-        
+    
         return nodes, edges, supernodes, superedges
 
 class DynamicGraphConstruction(nn.Module):
@@ -134,7 +134,7 @@ class DynamicGraphConstruction(nn.Module):
         self.hparams = hparams
         self.weight_normalization = nn.BatchNorm1d(1)  
         self.weighting_function = getattr(torch, weighting_function)
-        self.knn_radius = nn.parameter.Parameter(data=torch.ones(1), requires_grad=False)
+        self.register_buffer("knn_radius", torch.ones(1), persistent=True)
         
     def forward(self, src_embeddings, dst_embeddings, sym = False, norm = False, k = 10, logits = False):
         
@@ -151,7 +151,7 @@ class DynamicGraphConstruction(nn.Module):
                 graph = torch.stack([src, dst], dim = 0)
             if self.training:
                 maximum_dist = (src_embeddings[graph[0]] - dst_embeddings[graph[1]]).square().sum(-1).sqrt().max()
-                self.knn_radius.data = 0.9*self.knn_radius.data + 0.11*maximum_dist
+                self.knn_radius = 0.9*self.knn_radius + 0.11*maximum_dist
         
         # Compute bipartite attention
         likelihood = torch.einsum('ij,ij->i', src_embeddings[graph[0]], dst_embeddings[graph[1]]) 

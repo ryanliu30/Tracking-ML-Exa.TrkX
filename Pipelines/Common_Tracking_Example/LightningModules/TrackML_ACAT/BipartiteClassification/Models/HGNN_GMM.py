@@ -21,6 +21,7 @@ import numpy as np
 from .gnn_utils import InteractionGNNCell, HierarchicalGNNCell, DynamicGraphConstruction
 from ..bipartite_classification_base import BipartiteClassificationBase
 from ..utils import make_mlp, find_neighbors
+
     
 class InteractionGNNBlock(nn.Module):
 
@@ -153,17 +154,29 @@ class HierarchicalGNNBlock(nn.Module):
         self.GMM_model = GaussianMixture(n_components = 2)
         self.super_graph_construction = DynamicGraphConstruction("sigmoid", hparams)
         self.bipartite_graph_construction = DynamicGraphConstruction("exp", hparams)
-        self.score_cut = nn.parameter.Parameter(data=torch.zeros(1), requires_grad=False)
+        self.register_buffer("score_cut", torch.zeros(1))
         
         self.log = logging
         self.hparams = hparams
-        
+    
     def determine_cut(self, cut0):
         sigmoid = lambda x: 1/(1+np.exp(-x))
         func = lambda x: sigmoid(self.hparams["cluster_granularity"])*self.GMM_model.predict_proba(x.reshape((-1, 1)))[:, self.GMM_model.means_.argmin()] - sigmoid(-self.hparams["cluster_granularity"])*self.GMM_model.predict_proba(x.reshape((-1, 1)))[:, self.GMM_model.means_.argmax()]
         cut = fsolve(func, cut0)
         return cut.item()
+    
+    def get_cluster_labels(self, connected_components, x):
         
+        clusters = -torch.ones(len(x), device = x.device).long()
+        labels = torch.as_tensor(connected_components["labels"], device = x.device)
+        vertex = torch.tensor(connected_components["vertex"], device = x.device) 
+        _, inverse, counts = labels.unique(return_inverse = True, return_counts = True)
+        mask = counts[inverse] >= self.hparams["min_cluster_size"]
+        clusters[vertex[mask]] = labels[mask].unique(return_inverse = True)[1].long()
+        
+        return clusters
+            
+      
     def clustering(self, x, embeddings, graph):
         with torch.no_grad():
             
@@ -175,33 +188,37 @@ class HierarchicalGNNBlock(nn.Module):
             self.GMM_model.fit(likelihood.unsqueeze(1).cpu().numpy())
             if self.score_cut == 0:
                 cut = self.determine_cut(self.GMM_model.means_.mean().item())
-                self.score_cut.data = torch.tensor([cut], device = self.score_cut.device)
-            cut = self.determine_cut(self.score_cut.data.item())
+                self.score_cut = torch.tensor([cut], device = self.score_cut.device)
+            cut = self.determine_cut(self.score_cut.item())
             if self.training & (cut < self.GMM_model.means_.max().item()) & (cut > self.GMM_model.means_.min().item()):
-                self.score_cut.data = 0.95*self.score_cut.data + 0.05*self.determine_cut(self.score_cut.data.item())
+                self.score_cut = 0.95*self.score_cut + 0.05*self.determine_cut(self.score_cut.item())
             else:
                 cut = self.determine_cut(self.GMM_model.means_.mean().item())
                 if self.training & (cut < self.GMM_model.means_.max().item()) & (cut > self.GMM_model.means_.min().item()):
-                    self.score_cut.data = 0.95*self.score_cut.data + 0.05*self.determine_cut(self.score_cut.data.item())
+                    self.score_cut = 0.95*self.score_cut + 0.05*self.determine_cut(self.score_cut.item())
             
-            self.log("score_cut", self.score_cut.data.item())
+            self.log("score_cut", self.score_cut.item())
             
             # Connected Components
-            G = cugraph.Graph()
             mask = likelihood >= self.score_cut.to(likelihood.device)
-            df = cudf.DataFrame({"src": cp.asarray(graph[0, mask]),
-                                 "dst": cp.asarray(graph[1, mask]),
-                                })            
-            G.from_cudf_edgelist(df, source = "src", destination = "dst")
-            connected_components = cugraph.components.connected_components(G)
-            
-            # Obtain Clustering Results
-            clusters = -torch.ones(len(x), device = x.device).long()
-            labels = torch.as_tensor(connected_components["labels"], device = x.device)
-            vertex = torch.tensor(connected_components["vertex"], device = x.device) 
-            _, inverse, counts = labels.unique(return_inverse = True, return_counts = True)
-            mask = counts[inverse] >= self.hparams["min_cluster_size"]
-            clusters[vertex[mask]] = labels[mask].unique(return_inverse = True)[1].long()
+            try:
+                G = cugraph.Graph()
+                df = cudf.DataFrame({"src": cp.asarray(graph[0, mask]),
+                                     "dst": cp.asarray(graph[1, mask]),
+                                    })            
+                G.from_cudf_edgelist(df, source = "src", destination = "dst")
+                connected_components = cugraph.components.connected_components(G)
+                clusters = self.get_cluster_labels(connected_components, x)
+                if clusters.max() <= 2:
+                    raise ValueError
+            except ValueError:
+                G = cugraph.Graph()
+                df = cudf.DataFrame({"src": cp.asarray(graph[0]),
+                                     "dst": cp.asarray(graph[1]),
+                                    })            
+                G.from_cudf_edgelist(df, source = "src", destination = "dst")
+                connected_components = cugraph.components.connected_components(G)
+                clusters = self.get_cluster_labels(connected_components, x)
             
             return clusters
         
@@ -221,7 +238,7 @@ class HierarchicalGNNBlock(nn.Module):
         
         self.log("clusters", len(means))
         
-        supernodes = scatter_add((nodes[bipartite_graph[0]])*bipartite_edge_weights, bipartite_graph[1], dim=0, dim_size=means.shape[0])
+        supernodes = scatter_add((nn.functional.normalize(nodes, p=1)[bipartite_graph[0]])*bipartite_edge_weights, bipartite_graph[1], dim=0, dim_size=means.shape[0])
         supernodes = torch.cat([means, checkpoint(self.supernode_encoder, supernodes)], dim = -1)
         superedges = checkpoint(self.superedge_encoder, torch.cat([supernodes[super_graph[0]], supernodes[super_graph[1]]], dim=1))
         

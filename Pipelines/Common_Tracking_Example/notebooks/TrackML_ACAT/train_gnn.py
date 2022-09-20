@@ -43,8 +43,8 @@ def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser("train_gnn.py")
     add_arg = parser.add_argument
-    add_arg("config", nargs="?", default="default_config.yaml")
     add_arg("model", nargs="?", default=None)
+    add_arg("config", nargs="?", default="default_config.yaml")
     add_arg("checkpoint", nargs="?", default=None)
     add_arg("random_seed", nargs="?", default=None)
     return parser.parse_args()
@@ -57,7 +57,7 @@ def main():
     args = parse_args()
 
     with open(args.config) as file:
-        print(f"Using config file: {args.config}")
+        print("Using config file: {}".format(args.config))
         default_configs = yaml.load(file, Loader=yaml.FullLoader)
 
     if args.checkpoint is not None:
@@ -73,25 +73,36 @@ def main():
 
     print("Initialising model")
     print(time.ctime())
-    model = model_selector(args.model)
+    if "SLURM_JOB_ID" in os.environ:
+        default_root_dir = os.path.join("/global/cfs/cdirs/m3443/usr/ryanliu/TrackML/", os.environ["SLURM_JOB_ID"])
+    else: 
+        default_root_dir = "/global/cfs/cdirs/m3443/usr/ryanliu/TrackML/"
+
+    model = model_selector(str(args.model), default_configs)
 
     checkpoint_callback = ModelCheckpoint(
         monitor="val_loss", mode="min", save_top_k=2, save_last=True
     )
     
     logger = WandbLogger(
-        project=default_configs["project"]
+        project=default_configs["project"],
+        group=os.environ["SLURM_JOB_ID"] if "SLURM_JOB_ID" in os.environ else None
     )
-    logger.watch(model, log="all")
+    
+    # logger.watch(model, log="all")
+    if os.environ["SLURM_PROCID"] == '0':
+        print("SLURM_PROCID found")
+        os.makedirs(default_root_dir, exist_ok=True)
+        
         
     trainer = Trainer(
         gpus=default_configs["gpus"],
         num_nodes=default_configs["nodes"],
-        max_epochs=default_configs["max_epochs"],
+        max_epochs=model.hparams["max_epochs"],
         logger=logger,
         strategy=CustomDDPPlugin(find_unused_parameters=False),
         callbacks=[checkpoint_callback],
-        default_root_dir="/global/cfs/cdirs/m3443/usr/ryanliu/TrackML/"
+        default_root_dir=default_root_dir
     )
     trainer.fit(model, ckpt_path=args.checkpoint)
 

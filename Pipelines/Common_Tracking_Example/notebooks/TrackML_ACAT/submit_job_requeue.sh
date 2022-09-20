@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH -A m3443_g -q early_science
+#SBATCH -A m3443_g -q regular
 #SBATCH -C gpu 
-#SBATCH -t 60:00
+#SBATCH -t 360:00
 #SBATCH -n 4
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-task=1
@@ -15,10 +15,8 @@
 
 mkdir -p logs
 
-module load python
-source activate rapids
-
 eval "$(conda shell.bash hook)"
+conda activate rapids
 
 export SLURM_CPU_BIND="cores"
 echo -e "\nStarting sweeps\n"
