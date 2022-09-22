@@ -21,8 +21,8 @@ def process_hparams(hparams):
     if "cluster_granularity" not in hparams:
         hparams["cluster_granularity"] = 0
     
-    if "gpus" in hparams:
-        hparams["lr"] *= hparams["gpus"]
+#     if "gpus" in hparams:
+#         hparams["lr"] *= hparams["gpus"]
     
     return hparams
 

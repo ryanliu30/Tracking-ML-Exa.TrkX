@@ -186,11 +186,11 @@ class HierarchicalGNNBlock(nn.Module):
                 self.score_cut.data = torch.tensor([cut], device = self.score_cut.device)
             cut = self.determine_cut(self.score_cut.data.item())
             if self.training & (cut < self.GMM_model.means_.max().item()) & (cut > self.GMM_model.means_.min().item()):
-                self.score_cut.data = 0.95*self.score_cut.data + 0.05*self.determine_cut(self.score_cut.data.item())
+                self.score_cut.data = 0.95*self.score_cut.data + 0.05*cut
             else:
                 cut = self.determine_cut(self.GMM_model.means_.mean().item())
                 if self.training & (cut < self.GMM_model.means_.max().item()) & (cut > self.GMM_model.means_.min().item()):
-                    self.score_cut.data = 0.95*self.score_cut.data + 0.05*self.determine_cut(self.score_cut.data.item())
+                    self.score_cut.data = 0.95*self.score_cut.data + 0.05*cut
             
             self.log("score_cut", self.score_cut.data.item())
             
@@ -232,7 +232,7 @@ class HierarchicalGNNBlock(nn.Module):
         means = scatter_mean(embeddings[clusters >= 0], clusters[clusters >= 0], dim=0, dim_size=clusters.max()+1)
         means = nn.functional.normalize(means)
         
-        super_graph, super_edge_weights = self.super_graph_construction(means, means, sym = True, norm = False, k = self.hparams["supergraph_sparsity"])
+        super_graph, super_edge_weights = self.super_graph_construction(means, means, sym = True, norm = True, k = self.hparams["supergraph_sparsity"])
         bipartite_graph, bipartite_edge_weights = self.bipartite_graph_construction(embeddings, means, sym = False, norm = True, k = self.hparams["bipartitegraph_sparsity"])
         
         self.log("clusters", len(means))

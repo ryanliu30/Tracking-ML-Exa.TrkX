@@ -75,9 +75,10 @@ class TrackMLDataset(Dataset):
             mask = (event.pid != 0)
         if self.hparams["hard_ptcut"] > 0:
             mask = mask & (event.pt > self.hparams["hard_ptcut"])
-        node_mask = torch.zeros(event.pid.shape).bool()
-        node_mask[event.edge_index.unique()] = torch.ones(1).bool()
-        mask = mask & node_mask
+        if self.hparams["remove_isolated"]:
+            node_mask = torch.zeros(event.pid.shape).bool()
+            node_mask[event.edge_index.unique()] = torch.ones(1).bool()
+            mask = mask & node_mask
         
         event.pt[event.pid == 0] = 0
         

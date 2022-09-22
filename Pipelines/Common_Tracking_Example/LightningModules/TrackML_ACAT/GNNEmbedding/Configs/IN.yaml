@@ -16,6 +16,7 @@ primary: False
 noise: True
 hard_ptcut: 0
 edge_dropping_ratio: 0.
+remove_isolated: True
 
 # Model parameters
 model: Embedding-IN

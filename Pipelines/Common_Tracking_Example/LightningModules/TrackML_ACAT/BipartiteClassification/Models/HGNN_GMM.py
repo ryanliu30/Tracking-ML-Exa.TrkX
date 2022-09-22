@@ -186,16 +186,18 @@ class HierarchicalGNNBlock(nn.Module):
             
             # GMM edge cutting
             self.GMM_model.fit(likelihood.unsqueeze(1).cpu().numpy())
+            
             if self.score_cut == 0:
-                cut = self.determine_cut(self.GMM_model.means_.mean().item())
-                self.score_cut = torch.tensor([cut], device = self.score_cut.device)
+                self.score_cut = torch.tensor([self.GMM_model.means_.mean().item()], device = self.score_cut.device)
+            
             cut = self.determine_cut(self.score_cut.item())
+            
             if self.training & (cut < self.GMM_model.means_.max().item()) & (cut > self.GMM_model.means_.min().item()):
-                self.score_cut = 0.95*self.score_cut + 0.05*self.determine_cut(self.score_cut.item())
+                self.score_cut = 0.95*self.score_cut + 0.05*cut
             else:
                 cut = self.determine_cut(self.GMM_model.means_.mean().item())
                 if self.training & (cut < self.GMM_model.means_.max().item()) & (cut > self.GMM_model.means_.min().item()):
-                    self.score_cut = 0.95*self.score_cut + 0.05*self.determine_cut(self.score_cut.item())
+                    self.score_cut = 0.95*self.score_cut + 0.05*cut
             
             self.log("score_cut", self.score_cut.item())
             
@@ -233,7 +235,7 @@ class HierarchicalGNNBlock(nn.Module):
         means = scatter_mean(embeddings[clusters >= 0], clusters[clusters >= 0], dim=0, dim_size=clusters.max()+1)
         means = nn.functional.normalize(means)
         
-        super_graph, super_edge_weights = self.super_graph_construction(means, means, sym = True, norm = False, k = self.hparams["supergraph_sparsity"])
+        super_graph, super_edge_weights = self.super_graph_construction(means, means, sym = True, norm = True, k = self.hparams["supergraph_sparsity"])
         bipartite_graph, bipartite_edge_weights, bipartite_edge_weights_logits = self.bipartite_graph_construction(embeddings, means, sym = False, norm = True, k = self.hparams["bipartitegraph_sparsity"], logits = True)
         
         self.log("clusters", len(means))

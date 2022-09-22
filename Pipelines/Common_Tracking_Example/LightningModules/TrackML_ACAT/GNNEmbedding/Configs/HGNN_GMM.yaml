@@ -16,6 +16,7 @@ primary: False
 noise: True
 hard_ptcut: 0
 edge_dropping_ratio: 0.
+remove_isolated: True
 
 # Model parameters
 model: Embedding-HGNN-GMM
@@ -25,7 +26,7 @@ latent: 128
 hidden: ratio
 hidden_ratio: 2
 emb_dim: 8
-n_interaction_graph_iters: 6
+n_interaction_graph_iters: 4
 n_hierarchical_graph_iters: 8
 nb_node_layer: 3
 nb_edge_layer: 2
