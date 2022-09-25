@@ -1,9 +1,9 @@
 # Input/output configuration
-input_dir: /global/cfs/cdirs/m3443/usr/ryanliu/TrackML_data/filter_processed/
+input_dir: /global/cfs/cdirs/m3443/data/trackml-codalab/gnn_processed/1GeV_pt_cut_quickstart_example
 
 # Dataset parameters
 datatype_names: [train, val, test] # Which directory prefixes to use, assuming at least a train dataset 
-train_split: [2000, 100, 100] # Number of [training, validation, testing] examples
+train_split: [300, 20, 20] # Number of [training, validation, testing] examples
 true_edges: modulewise_true_edges
 ptcut: 1.0
 n_hits: 5
@@ -22,16 +22,15 @@ remove_isolated: True
 model: BC-HGNN-GMM
 spatial_channels: 3
 cell_channels: 8
-latent: 128
+latent: 256
 hidden: ratio
 hidden_ratio: 2
 emb_dim: 8
 n_interaction_graph_iters: 6
-n_hierarchical_graph_iters: 8
+n_hierarchical_graph_iters: 6
 nb_node_layer: 3
 nb_edge_layer: 2
 output_layers: 3
-knn: 100
 train_r: 1.0
 hidden_output_activation: Tanh
 layernorm: True

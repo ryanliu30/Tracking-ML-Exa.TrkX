@@ -155,12 +155,12 @@ class DynamicGraphConstruction(nn.Module):
         
         # Compute bipartite attention
         likelihood = torch.einsum('ij,ij->i', src_embeddings[graph[0]], dst_embeddings[graph[1]]) 
-        # likelihood = torch.atanh(torch.clamp(likelihood, min=-1+1e-7, max=1-1e-7))
         edge_weights_logits = self.weight_normalization(likelihood.unsqueeze(1)).squeeze()
         edge_weights = self.weighting_function(edge_weights_logits)
         
         if norm:
             edge_weights = edge_weights/(1e-12 + scatter_add(edge_weights, graph[0], dim=0, dim_size = src_embeddings.shape[0])[graph[0]])
+            # edge_weights = edge_weights/edge_weights.mean()
         edge_weights = edge_weights.unsqueeze(1)
         if logits:
             return graph, edge_weights, edge_weights_logits

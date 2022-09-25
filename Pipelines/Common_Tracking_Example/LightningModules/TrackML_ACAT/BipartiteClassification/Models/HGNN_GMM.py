@@ -192,12 +192,13 @@ class HierarchicalGNNBlock(nn.Module):
             
             cut = self.determine_cut(self.score_cut.item())
             
+            momentum = 0.95
             if self.training & (cut < self.GMM_model.means_.max().item()) & (cut > self.GMM_model.means_.min().item()):
-                self.score_cut = 0.95*self.score_cut + 0.05*cut
+                self.score_cut = momentum*self.score_cut + (1-momentum)*cut
             else:
                 cut = self.determine_cut(self.GMM_model.means_.mean().item())
                 if self.training & (cut < self.GMM_model.means_.max().item()) & (cut > self.GMM_model.means_.min().item()):
-                    self.score_cut = 0.95*self.score_cut + 0.05*cut
+                    self.score_cut = momentum*self.score_cut + (1-momentum)*cut
             
             self.log("score_cut", self.score_cut.item())
             
