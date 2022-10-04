@@ -1,2 +1,0 @@
-# model: {"values": ["EC-IN", "Embedding-IN", "Embedding-HGNN-GMM", "Embedding-HGNN-HDBSCAN"]}
-lr: 0.008

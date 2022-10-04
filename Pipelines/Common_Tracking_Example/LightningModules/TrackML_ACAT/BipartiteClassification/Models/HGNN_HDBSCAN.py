@@ -165,7 +165,7 @@ class HierarchicalGNNBlock(nn.Module):
     def clustering(self, x, embeddings, graph):
         with torch.no_grad():
             
-            clustering_input = embeddings + torch.normal(0, 1e-3, embeddings.shape, device = embeddings.device)
+            clustering_input = embeddings #+ torch.normal(0, 1e-3, embeddings.shape, device = embeddings.device)
                 
             clustering_input = cudf.DataFrame(clustering_input.detach())       
             clusters = self.hdbscan_model.fit_predict(clustering_input)

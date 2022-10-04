@@ -244,7 +244,7 @@ class HierarchicalGNNBlock(nn.Module):
         supernodes = scatter_add((nn.functional.normalize(nodes, p=1)[bipartite_graph[0]])*bipartite_edge_weights, bipartite_graph[1], dim=0, dim_size=means.shape[0])
         supernodes = torch.cat([means, checkpoint(self.supernode_encoder, supernodes)], dim = -1)
         superedges = checkpoint(self.superedge_encoder, torch.cat([supernodes[super_graph[0]], supernodes[super_graph[1]]], dim=1))
-        
+
         for layer in self.hgnn_cells:
             nodes, edges, supernodes, superedges = layer(nodes,
                                                          edges,

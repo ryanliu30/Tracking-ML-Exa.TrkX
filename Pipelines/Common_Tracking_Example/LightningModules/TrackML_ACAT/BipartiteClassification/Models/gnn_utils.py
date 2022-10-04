@@ -119,12 +119,10 @@ class HierarchicalGNNCell(nn.Module):
         nodes = checkpoint(self.node_network, torch.cat([nodes, edge_messages, supernode_messages], dim=-1)) + nodes
         del supernode_messages, edge_messages
         
-        # Compute new superedge features
-        superedges = checkpoint(self.superedge_network, torch.cat([supernodes[super_graph[0]], supernodes[super_graph[1]], superedges], dim=-1)) + superedges
-        
         # Compute new edge features
+        superedges = checkpoint(self.superedge_network, torch.cat([supernodes[super_graph[0]], supernodes[super_graph[1]], superedges], dim=-1)) + superedges
         edges = checkpoint(self.edge_network, torch.cat([nodes[graph[0]], nodes[graph[1]], edges], dim=-1)) + edges
-    
+        
         return nodes, edges, supernodes, superedges
 
 class DynamicGraphConstruction(nn.Module):

@@ -28,7 +28,8 @@ def eval_metrics(bipartite_graph, event, pt_cut = 1., nhits_cut = 5, majority_cu
     
     pid_cluster_mapping = cp.sparse.coo_matrix((cp.ones(bipartite_graph.shape[1]), (pid[bipartite_graph[0]], bipartite_graph[1])), shape=(pid.max().item()+1, bipartite_graph[1].max().item()+1)).tocsr()
     
-    matching = (pid_cluster_mapping >= majority_cut*pid_cluster_mapping.sum(0)) & (pid_cluster_mapping >= majority_cut*nhits.reshape(-1, 1)) & (pid_cluster_mapping == pid_cluster_mapping.max(1).todense())
+    cluster_hashing = cp.linspace(1, 1+1e-12, bipartite_graph[1].max().item()+1).reshape(1, -1)
+    matching = (pid_cluster_mapping >= majority_cut*pid_cluster_mapping.sum(0)) & (pid_cluster_mapping >= majority_cut*nhits.reshape(-1, 1)) & (pid_cluster_mapping.multiply(cluster_hashing) == pid_cluster_mapping.multiply(cluster_hashing).max(1).todense())
     row_match, col_match = cp.where(matching)
     if row_match.shape[0] == 0:
         return {

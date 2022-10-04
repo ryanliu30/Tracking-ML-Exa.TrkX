@@ -14,7 +14,7 @@ import cupy as cp
 import wandb
 from torch.utils.data import random_split
 import torch.nn as nn
-from torch_scatter import scatter_mean, scatter_add, scatter_min
+from torch_scatter import scatter_mean, scatter_add, scatter_min, scatter_max
 from sklearn.metrics import roc_auc_score
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import min_weight_full_bipartite_matching
@@ -165,6 +165,80 @@ class BipartiteClassificationBase(LightningModule):
         dist = ((embeddings[graph[0]] - embeddings[graph[1]]).square().sum(-1)+1e-12).sqrt()
         
         return hinge, dist
+    
+    def get_bipartite_loss(self, bipartite_scores, bipartite_graph, batch):
+        
+        # Convert PID&pT
+        original_pid, pid, nhits = torch.unique(batch.pid, return_inverse = True, return_counts = True)
+        pt = scatter_min(batch.pt, pid, dim=0, dim_size = pid.max()+1)[0]
+        
+        # Matching objects
+        with torch.no_grad():
+            
+            if "ma" in self.hparams["regime"]:
+                
+                pid_cluster_mapping = csr_matrix(
+                    (bipartite_scores.cpu().numpy(), (pid[bipartite_graph[0]].cpu().numpy(), bipartite_graph[1].cpu().numpy())),
+                    shape=(pid.max()+1, bipartite_graph[1].max()+1)
+                )
+                matching = (pid_cluster_mapping > 0.5*pid_cluster_mapping.sum(0)) & (pid_cluster_mapping > 0.5*nhits.cpu().numpy().reshape(-1, 1)) 
+                
+                row_match, col_match = np.where(matching)
+                matched_cluster = np.array([False]*(bipartite_graph[1].max()+1))
+                matched_cluster[col_match] = True
+                matched_particles = np.array([False]*(pid.max()+1))
+                matched_particles[row_match] = True
+                
+                mask = (~matched_cluster[bipartite_graph[1].cpu()]) & (~matched_particles[pid[bipartite_graph[0]].cpu()])
+                remaining_bipartite_graph = bipartite_graph[:, mask] 
+                remaining_pid_cluster_mapping = csr_matrix(
+                    (torch.cat([bipartite_scores[mask],
+                                1e-12*torch.ones(pid.max()+1, device = self.device)], dim = 0).cpu().numpy(),
+                    (
+                        torch.cat([pid[remaining_bipartite_graph[0]], torch.arange(pid.max()+1, device = self.device)], dim = 0).cpu().numpy(),
+                        torch.cat([remaining_bipartite_graph[1], 
+                                   torch.arange(remaining_bipartite_graph[1].max()+1,
+                                                remaining_bipartite_graph[1].max()+pid.max()+2, device = self.device)], dim = 0).cpu().numpy()
+                    )
+                    ),
+                    shape=(pid.max()+1, remaining_bipartite_graph[1].max()+pid.max()+2)
+                )
+
+                row_match, col_match = min_weight_full_bipartite_matching(remaining_pid_cluster_mapping, maximize=True)
+                noise_mask = (original_pid.cpu().numpy()[row_match] != 0) & (col_match < remaining_bipartite_graph[1].max().item()+1)
+                row_match, col_match = row_match[noise_mask], col_match[noise_mask]
+                matching[row_match, col_match] = True
+                truth = torch.tensor(matching[pid[bipartite_graph[0]].cpu(), bipartite_graph[1].cpu()], device = self.device).squeeze()
+                row_match, col_match = np.where(matching)
+            else:
+                pid_cluster_mapping = csr_matrix(
+                    (torch.cat([bipartite_scores, 1e-12*torch.ones(pid.max()+1, device = self.device)], dim = 0).cpu().numpy(),
+                    (
+                        torch.cat([pid[bipartite_graph[0]], torch.arange(pid.max()+1, device = self.device)], dim = 0).cpu().numpy(),
+                        torch.cat([bipartite_graph[1], torch.arange(bipartite_graph[1].max()+1,
+                                                                    bipartite_graph[1].max()+pid.max()+2, device = self.device)], dim = 0).cpu().numpy()
+                    )
+                    ),
+                    shape=(pid.max()+1, bipartite_graph[1].max()+pid.max()+2)
+                )
+                row_match, col_match = min_weight_full_bipartite_matching(pid_cluster_mapping, maximize=True)
+                row_match, col_match = torch.tensor(row_match, device = self.device).long(), torch.tensor(col_match, device = self.device).long()
+                noise_mask = (original_pid[row_match] != 0) & (col_match < bipartite_graph[1].max()+1)
+                row_match, col_match = row_match[noise_mask], col_match[noise_mask]
+
+                matched_particles = torch.tensor([False]*(pid.max()+1), device = self.device)
+                matched_particles[row_match] = True
+                pid_assignments = torch.zeros((pid.max()+1), device = self.device).long()
+                pid_assignments[row_match] = col_match
+                truth = torch.tensor([False]*len(bipartite_scores), device = self.device)
+                matched_hits = matched_particles[pid[bipartite_graph[0]]]
+                truth[matched_hits] = (pid_assignments[pid[bipartite_graph[0]][matched_hits]] == bipartite_graph[1][matched_hits])
+        
+        # Compute bipartite loss
+        asgmt_loss = torch.nn.functional.binary_cross_entropy(bipartite_scores, truth.float(), reduction='none')
+        asgmt_loss = torch.dot(asgmt_loss, self.get_asgmt_weight(batch, pt, bipartite_graph, truth, row_match, col_match))
+        
+        return asgmt_loss
         
     
     def training_step(self, batch, batch_idx):
@@ -176,41 +250,10 @@ class BipartiteClassificationBase(LightningModule):
         weights = self.get_emb_weight(batch, batch.edge_index, y_pid)
         hinge, dist = self.get_hinge_distance(batch, intermediate_embeddings, batch.edge_index, y_pid)
 
-        emb_loss = nn.functional.hinge_embedding_loss(dist, hinge, margin=self.hparams["train_r"], reduction='none').square()
+        emb_loss = nn.functional.hinge_embedding_loss(dist/self.hparams["train_r"], hinge, margin=1, reduction='none').square()
         emb_loss = torch.dot(emb_loss, weights)
         
-
-        # Convert PID&pT
-        original_pid, pid = torch.unique(batch.pid, return_inverse = True)
-        pt = scatter_min(batch.pt, pid, dim=0, dim_size = pid.max()+1)[0]
-        
-        # Matching objects
-        with torch.no_grad():
-            pid_cluster_mapping = csr_matrix(
-                (torch.cat([bipartite_scores, 1e-12*torch.ones(pid.max()+1, device = self.device)], dim = 0).cpu().numpy(),
-                (
-                    torch.cat([pid[bipartite_graph[0]], torch.arange(pid.max()+1, device = self.device)], dim = 0).cpu().numpy(),
-                    torch.cat([bipartite_graph[1], torch.arange(bipartite_graph[1].max()+1, bipartite_graph[1].max()+pid.max()+2, device = self.device)], dim = 0).cpu().numpy()
-                )
-                ),
-                shape=(pid.max()+1, bipartite_graph[1].max()+pid.max()+2)
-            )
-            row_match, col_match = min_weight_full_bipartite_matching(pid_cluster_mapping, maximize=True)
-            row_match, col_match = torch.tensor(row_match, device = self.device).long(), torch.tensor(col_match, device = self.device).long()
-            noise_mask = (original_pid[row_match] != 0) & (col_match < bipartite_graph[1].max()+1)
-            row_match, col_match = row_match[noise_mask], col_match[noise_mask]
-        
-            matched_particles = torch.tensor([False]*(pid.max()+1), device = self.device)
-            matched_particles[row_match] = True
-        
-        # Compute bipartite loss
-        pid_assignments = torch.zeros((pid.max()+1), device = self.device).long()
-        pid_assignments[row_match] = col_match
-        truth = torch.tensor([False]*len(bipartite_scores), device = self.device)
-        matched_hits = matched_particles[pid[bipartite_graph[0]]]
-        truth[matched_hits] = (pid_assignments[pid[bipartite_graph[0]][matched_hits]] == bipartite_graph[1][matched_hits])
-        asgmt_loss = torch.nn.functional.binary_cross_entropy(bipartite_scores, truth.float(), reduction='none')
-        asgmt_loss = torch.dot(asgmt_loss, self.get_asgmt_weight(batch, pt, bipartite_graph, truth, row_match, col_match))
+        asgmt_loss = self.get_bipartite_loss(bipartite_scores, bipartite_graph, batch)
         
         # Compute final loss using scheduling
         if "loss_schedule" in self.hparams and self.hparams["loss_schedule"] is not None:
@@ -227,7 +270,6 @@ class BipartiteClassificationBase(LightningModule):
                 
             }
         )
-
         
         return loss
 
@@ -245,40 +287,10 @@ class BipartiteClassificationBase(LightningModule):
         weights = self.get_emb_weight(batch, batch.edge_index, y_pid)
         hinge, dist = self.get_hinge_distance(batch, intermediate_embeddings, batch.edge_index, y_pid)
 
-        emb_loss = nn.functional.hinge_embedding_loss(dist, hinge, margin=self.hparams["train_r"], reduction='none').square()
+        emb_loss = nn.functional.hinge_embedding_loss(dist/self.hparams["train_r"], hinge, margin=1, reduction='none').square()
         emb_loss = torch.dot(emb_loss, weights)
 
-        # Convert PID&pT
-        original_pid, pid = torch.unique(batch.pid, return_inverse = True)
-        pt = scatter_min(batch.pt, pid, dim=0, dim_size = pid.max()+1)[0]
-        
-        # Matching objects
-        with torch.no_grad():
-            pid_cluster_mapping = csr_matrix(
-                (torch.cat([bipartite_scores, 1e-12*torch.ones(pid.max()+1, device = self.device)], dim = 0).cpu().numpy(),
-                (
-                    torch.cat([pid[bipartite_graph[0]], torch.arange(pid.max()+1, device = self.device)], dim = 0).cpu().numpy(),
-                    torch.cat([bipartite_graph[1], torch.arange(bipartite_graph[1].max()+1, bipartite_graph[1].max()+pid.max()+2, device = self.device)], dim = 0).cpu().numpy()
-                )
-                ),
-                shape=(pid.max()+1, bipartite_graph[1].max()+pid.max()+2)
-            )
-            row_match, col_match = min_weight_full_bipartite_matching(pid_cluster_mapping, maximize=True)
-            row_match, col_match = torch.tensor(row_match, device = self.device).long(), torch.tensor(col_match, device = self.device).long()
-            noise_mask = (original_pid[row_match] != 0) & (col_match < bipartite_graph[1].max()+1)
-            row_match, col_match = row_match[noise_mask], col_match[noise_mask]
-        
-            matched_particles = torch.tensor([False]*(pid.max()+1), device = self.device)
-            matched_particles[row_match] = True
-        
-        # Compute bipartite loss
-        pid_assignments = torch.zeros((pid.max()+1), device = self.device).long()
-        pid_assignments[row_match] = col_match
-        truth = torch.tensor([False]*len(bipartite_scores), device = self.device)
-        matched_hits = matched_particles[pid[bipartite_graph[0]]]
-        truth[matched_hits] = (pid_assignments[pid[bipartite_graph[0]][matched_hits]] == bipartite_graph[1][matched_hits])
-        asgmt_loss = torch.nn.functional.binary_cross_entropy(bipartite_scores, truth.float(), reduction='none')
-        asgmt_loss = torch.dot(asgmt_loss, self.get_asgmt_weight(batch, pt, bipartite_graph, truth, row_match, col_match))
+        asgmt_loss = self.get_bipartite_loss(bipartite_scores, bipartite_graph, batch)
         
         if "loss_schedule" in self.hparams and isinstance(self.hparams["loss_schedule"], float):
             loss_schedule = self.hparams["loss_schedule"]
@@ -315,7 +327,12 @@ class BipartiteClassificationBase(LightningModule):
                                                        majority_cut = self.hparams["majority_cut"],
                                                        primary = False)
         except:
-            tracking_performace_metrics = {}
+            tracking_performace_metrics = {
+                "track_eff": 0,
+                "track_pur": 0,
+                "hit_eff": 0,
+                "hit_pur": 0
+            }
             
         
         if log:

@@ -1,3 +1,3 @@
 project: TrackML
-gpus: 4
+gpus: 1
 nodes: 1
